@@ -33,7 +33,7 @@ jobs:
         run: |
           base64 -d cocotaxi-2.4.3.patch.gz.b64 | gzip -dc > build-src/cocotaxi-2.4.3.patch
           patch --batch --forward -p1 -d "$PROJECT_DIR" < build-src/cocotaxi-2.4.3.patch
-          grep -n 'versionName "2.4.3"' "$PROJECT_DIR/app/build.gradle"
+          grep -n "versionName '2.4.3'" "$PROJECT_DIR/app/build.gradle"
 
       - name: Build debug APK
         run: |
