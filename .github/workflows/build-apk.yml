@@ -7,9 +7,10 @@ on:
       - 'COCOTAXI_2.4.2_sesion_icono_sin_espera_fuentes.zip'
       - 'cocotaxi-2.4.3.patch.gz.b64'
       - 'cocotaxi-2.4.4-app.patch.gz.b64'
+      - 'cocotaxi-2.4.5.patch.gz.b64'
       - '.github/workflows/build-apk.yml'
 
-# Build 2.4.4 from the verified 2.4.2 source, the 2.4.3 patch, and the focused 2.4.4 app patch.
+# Rebuild the verified source chain and compile COCOTAXI 2.4.5.
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -30,26 +31,36 @@ jobs:
           unzip -q COCOTAXI_2.4.2_sesion_icono_sin_espera_fuentes.zip -d build-src
           echo "PROJECT_DIR=$(find build-src -name gradlew -type f -printf '%h\n' | head -n1)" >> "$GITHUB_ENV"
 
-      - name: Apply COCOTAXI 2.4.3 base fixes
+      - name: Apply 2.4.3 base fixes
         run: |
-          base64 -d cocotaxi-2.4.3.patch.gz.b64 | gzip -dc > build-src/cocotaxi-2.4.3.patch
-          patch --batch --forward -p1 -d "$PROJECT_DIR" < build-src/cocotaxi-2.4.3.patch
+          base64 -d cocotaxi-2.4.3.patch.gz.b64 | gzip -dc > build-src/2.4.3.patch
+          patch --batch --forward -p1 -d "$PROJECT_DIR" < build-src/2.4.3.patch
 
-      - name: Apply COCOTAXI 2.4.4 speed and acceptance fixes
+      - name: Apply 2.4.4 speed fixes
         run: |
-          base64 -d cocotaxi-2.4.4-app.patch.gz.b64 | gzip -dc > build-src/cocotaxi-2.4.4-app.patch
-          patch --batch --forward -p1 -d "$PROJECT_DIR" < build-src/cocotaxi-2.4.4-app.patch
-          grep -n "versionName '2.4.4'" "$PROJECT_DIR/app/build.gradle"
+          base64 -d cocotaxi-2.4.4-app.patch.gz.b64 | gzip -dc > build-src/2.4.4.patch
+          patch --batch --forward -p1 -d "$PROJECT_DIR" < build-src/2.4.4.patch
+
+      - name: Apply 2.4.5 session and UI fixes
+        run: |
+          base64 -d cocotaxi-2.4.5.patch.gz.b64 | gzip -dc > build-src/2.4.5.patch
+          patch --batch --forward -p1 -d "$PROJECT_DIR" < build-src/2.4.5.patch
+          grep -n "versionName '2.4.5'" "$PROJECT_DIR/app/build.gradle"
+
+      - name: Unit tests
+        run: |
+          cd "$PROJECT_DIR"
+          chmod +x gradlew
+          ./gradlew --no-daemon testDebugUnitTest
 
       - name: Build debug APK
         run: |
           cd "$PROJECT_DIR"
-          chmod +x gradlew
           ./gradlew --no-daemon assembleDebug
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: COCOTAXI-2.4.4-debug-apk
+          name: COCOTAXI-2.4.5-debug-apk
           path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
