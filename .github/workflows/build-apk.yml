@@ -8,9 +8,11 @@ on:
       - 'cocotaxi-2.4.3.patch.gz.b64'
       - 'cocotaxi-2.4.4-app.patch.gz.b64'
       - 'cocotaxi-2.4.5-app.patch.gz.b64.part*'
+      - 'cocotaxi-2.4.6-ui-pin.patch.gz.b64'
+      - 'prepare_project.sh'
       - '.github/workflows/build-apk.yml'
 
-# Rebuild the verified source chain and compile COCOTAXI 2.4.5.
+# Reconstruct the verified source chain, test it and compile COCOTAXI 2.4.6.
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -24,34 +26,24 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Unzip project
+      - name: Prepare exact 2.4.6 project
         run: |
-          rm -rf build-src
-          mkdir build-src
-          unzip -q COCOTAXI_2.4.2_sesion_icono_sin_espera_fuentes.zip -d build-src
-          echo "PROJECT_DIR=$(find build-src -name gradlew -type f -printf '%h\n' | head -n1)" >> "$GITHUB_ENV"
+          chmod +x prepare_project.sh
+          ./prepare_project.sh
+          echo "PROJECT_DIR=$GITHUB_WORKSPACE/COCOTAXI_2.4.6" >> "$GITHUB_ENV"
+          grep -n "versionName '2.4.6'" COCOTAXI_2.4.6/app/build.gradle
+          grep -n "versionCode 21" COCOTAXI_2.4.6/app/build.gradle
 
-      - name: Apply 2.4.3 base fixes
-        run: |
-          base64 -d cocotaxi-2.4.3.patch.gz.b64 | gzip -dc > build-src/2.4.3.patch
-          patch --batch --forward -p1 -d "$PROJECT_DIR" < build-src/2.4.3.patch
-
-      - name: Apply 2.4.4 speed fixes
-        run: |
-          base64 -d cocotaxi-2.4.4-app.patch.gz.b64 | gzip -dc > build-src/2.4.4.patch
-          patch --batch --forward -p1 -d "$PROJECT_DIR" < build-src/2.4.4.patch
-
-      - name: Apply 2.4.5 session and UI fixes
-        run: |
-          cat cocotaxi-2.4.5-app.patch.gz.b64.part1 cocotaxi-2.4.5-app.patch.gz.b64.part2 cocotaxi-2.4.5-app.patch.gz.b64.part3 cocotaxi-2.4.5-app.patch.gz.b64.part4 | base64 -d | gzip -dc > build-src/2.4.5-app.patch
-          patch --batch --forward -p1 -d "$PROJECT_DIR" < build-src/2.4.5-app.patch
-          grep -n "versionName '2.4.5'" "$PROJECT_DIR/app/build.gradle"
-
-      - name: Unit tests
+      - name: Regression and PIN tests
         run: |
           cd "$PROJECT_DIR"
           chmod +x gradlew
           ./gradlew --no-daemon testDebugUnitTest \
+            --tests com.cocotaxi.app.FormulaTest \
+            --tests com.cocotaxi.app.PromotionStoreTest \
+            --tests com.cocotaxi.app.CardAccessibilityTest \
+            --tests com.cocotaxi.app.OverlayTest \
+            --tests com.cocotaxi.app.PinStoreTest \
             --tests com.cocotaxi.app.StoreTest.photographedOriginConfirmsAssignmentOnlyOnce \
             --tests com.cocotaxi.app.StoreTest.confirmedAcceptanceStartsLiveServiceAndIncomeImmediately \
             --tests com.cocotaxi.app.StoreTest.driverCanRemoveAndRestoreDefaultTripConfirmation \
@@ -65,9 +57,20 @@ jobs:
           cd "$PROJECT_DIR"
           ./gradlew --no-daemon assembleDebug
 
+      - name: Package auditable source
+        run: |
+          zip -qr COCOTAXI_2.4.6_fuentes.zip COCOTAXI_2.4.6
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: COCOTAXI-2.4.5-debug-apk
+          name: COCOTAXI-2.4.6-debug-apk
           path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+
+      - name: Upload source
+        uses: actions/upload-artifact@v4
+        with:
+          name: COCOTAXI-2.4.6-source
+          path: COCOTAXI_2.4.6_fuentes.zip
           if-no-files-found: error
