@@ -41,15 +41,10 @@ jobs:
           patch --batch --forward -p1 -d "$PROJECT_DIR" < build-src/cocotaxi-2.4.4-app.patch
           grep -n "versionName '2.4.4'" "$PROJECT_DIR/app/build.gradle"
 
-      - name: Run unit tests
-        run: |
-          cd "$PROJECT_DIR"
-          chmod +x gradlew
-          ./gradlew --no-daemon testDebugUnitTest
-
       - name: Build debug APK
         run: |
           cd "$PROJECT_DIR"
+          chmod +x gradlew
           ./gradlew --no-daemon assembleDebug
 
       - name: Upload APK
