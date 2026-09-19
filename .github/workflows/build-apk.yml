@@ -7,7 +7,7 @@ on:
       - 'COCOTAXI_2.4.2_sesion_icono_sin_espera_fuentes.zip'
       - 'cocotaxi-2.4.3.patch.gz.b64'
       - 'cocotaxi-2.4.4-app.patch.gz.b64'
-      - 'cocotaxi-2.4.5-app.patch.gz.b64'
+      - 'cocotaxi-2.4.5-app.patch.gz.b64.part*'
       - '.github/workflows/build-apk.yml'
 
 # Rebuild the verified source chain and compile COCOTAXI 2.4.5.
@@ -43,7 +43,7 @@ jobs:
 
       - name: Apply 2.4.5 session and UI fixes
         run: |
-          base64 -d cocotaxi-2.4.5-app.patch.gz.b64 | gzip -dc > build-src/2.4.5-app.patch
+          cat cocotaxi-2.4.5-app.patch.gz.b64.part1 cocotaxi-2.4.5-app.patch.gz.b64.part2 cocotaxi-2.4.5-app.patch.gz.b64.part3 cocotaxi-2.4.5-app.patch.gz.b64.part4 | base64 -d | gzip -dc > build-src/2.4.5-app.patch
           patch --batch --forward -p1 -d "$PROJECT_DIR" < build-src/2.4.5-app.patch
           grep -n "versionName '2.4.5'" "$PROJECT_DIR/app/build.gradle"
 
