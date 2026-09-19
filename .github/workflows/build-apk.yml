@@ -51,7 +51,14 @@ jobs:
         run: |
           cd "$PROJECT_DIR"
           chmod +x gradlew
-          ./gradlew --no-daemon testDebugUnitTest
+          ./gradlew --no-daemon testDebugUnitTest \
+            --tests com.cocotaxi.app.StoreTest.photographedOriginConfirmsAssignmentOnlyOnce \
+            --tests com.cocotaxi.app.StoreTest.confirmedAcceptanceStartsLiveServiceAndIncomeImmediately \
+            --tests com.cocotaxi.app.StoreTest.driverCanRemoveAndRestoreDefaultTripConfirmation \
+            --tests com.cocotaxi.app.StoreTest.finishButtonNotCompletion \
+            --tests com.cocotaxi.app.StoreTest.completedExactlyOnce \
+            --tests com.cocotaxi.app.UiTest.iconMinimizesOnlyResumedCoco \
+            --tests com.cocotaxi.app.UiTest.fourTabsAndScreensRender
 
       - name: Build debug APK
         run: |
