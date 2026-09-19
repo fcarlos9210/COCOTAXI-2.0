@@ -25,7 +25,8 @@ cat "$ROOT"/cocotaxi-2.4.5-app.patch.gz.b64.part{1,2,3,4} \
   | base64 -d | gzip -dc > "$WORK/2.4.5.patch"
 patch --batch --forward -p1 -d "$PROJECT_DIR" < "$WORK/2.4.5.patch"
 
-base64 -d "$ROOT/cocotaxi-2.4.6-ui-pin.patch.gz.b64" | gzip -dc > "$WORK/2.4.6.patch"
+cat "$ROOT"/cocotaxi-2.4.6-ui-pin.patch.gz.b64.part{1,2,3,4,5} \
+  | base64 -d | gzip -dc > "$WORK/2.4.6.patch"
 patch --batch --forward -p5 -d "$PROJECT_DIR" < "$WORK/2.4.6.patch"
 
 mv "$PROJECT_DIR" "$OUT"
