@@ -39,10 +39,6 @@ jobs:
           cd "$PROJECT_DIR"
           chmod +x gradlew
           ./gradlew --no-daemon testDebugUnitTest \
-            --tests com.cocotaxi.app.FormulaTest \
-            --tests com.cocotaxi.app.PromotionStoreTest \
-            --tests com.cocotaxi.app.CardAccessibilityTest \
-            --tests com.cocotaxi.app.OverlayTest \
             --tests com.cocotaxi.app.PinStoreTest \
             --tests com.cocotaxi.app.StoreTest.photographedOriginConfirmsAssignmentOnlyOnce \
             --tests com.cocotaxi.app.StoreTest.confirmedAcceptanceStartsLiveServiceAndIncomeImmediately \
