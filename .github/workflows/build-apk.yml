@@ -71,3 +71,5 @@ jobs:
           name: COCOTAXI-2.4.7-source
           path: COCOTAXI_2.4.7_fuentes.zip
           if-no-files-found: error
+
+# Trigger temporal para reconstruir la base 2.4.7 antes del parche 2.6.1.
