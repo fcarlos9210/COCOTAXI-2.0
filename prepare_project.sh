@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Reconstruct the exact COCOTAXI 2.4.6 Android project from the verified source chain.
+# Reconstruct the exact COCOTAXI 2.4.7 Android project from the verified source chain.
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 WORK="$ROOT/.cocotaxi-build-src"
-OUT="$ROOT/COCOTAXI_2.4.6"
+OUT="$ROOT/COCOTAXI_2.4.7"
 
 rm -rf "$WORK" "$OUT"
 mkdir -p "$WORK"
@@ -29,8 +29,12 @@ cat "$ROOT"/cocotaxi-2.4.6-ui-pin.patch.gz.b64.part{1,2,3,4,5} \
   | base64 -d | gzip -dc > "$WORK/2.4.6.patch"
 patch --batch --forward -p5 -d "$PROJECT_DIR" < "$WORK/2.4.6.patch"
 
+cat "$ROOT"/cocotaxi-2.4.7-compact-settings.patch.gz.b64.part{1,2} \
+  | base64 -d | gzip -dc > "$WORK/2.4.7.patch"
+patch --batch --forward -p0 -d "$PROJECT_DIR" < "$WORK/2.4.7.patch"
+
 mv "$PROJECT_DIR" "$OUT"
 rm -rf "$WORK"
 
-echo "COCOTAXI 2.4.6 listo en: $OUT"
-echo "Para auditar/compilar: cd COCOTAXI_2.4.6"
+echo "COCOTAXI 2.4.7 listo en: $OUT"
+echo "Para auditar/compilar: cd COCOTAXI_2.4.7"
