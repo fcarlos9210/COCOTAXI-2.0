@@ -1,0 +1,16 @@
+diff --git a/app/src/test/java/com/cocotaxi/app/LicenseApiClientTest.java b/app/src/test/java/com/cocotaxi/app/LicenseApiClientTest.java
+--- a/app/src/test/java/com/cocotaxi/app/LicenseApiClientTest.java
++++ b/app/src/test/java/com/cocotaxi/app/LicenseApiClientTest.java
+@@ -6,7 +6,12 @@
+ import java.util.ArrayList;
+ import java.util.List;
+ import org.junit.Test;
++import org.junit.runner.RunWith;
++import org.robolectric.RobolectricTestRunner;
++import org.robolectric.annotation.Config;
+ 
++@RunWith(RobolectricTestRunner.class)
++@Config(sdk = 34)
+ public class LicenseApiClientTest {
+   @Test
+   public void missingStatusActivatesTrialUsingOnlyPublicEndpoints() {
