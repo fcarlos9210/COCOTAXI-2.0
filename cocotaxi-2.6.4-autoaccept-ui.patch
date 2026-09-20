@@ -53,7 +53,7 @@ diff -ruN a/app/src/main/java/com/cocotaxi/app/CocotaxiAccessibilityService.java
          if (cards.isEmpty()) {
            Offer rootOffer = OfferParser.parseNormalized(text, normalized, CABIFY);
            if (rootOffer.hasEnoughForDecision()) cards = Collections.singletonList(rootOffer);
-@@ -374,7 +376,7 @@
+@@ -373,7 +375,7 @@
            rememberDetail(cards, !list && hasAccept);
            previous = cards;
            previousAt = SystemClock.elapsedRealtime();
@@ -62,7 +62,7 @@ diff -ruN a/app/src/main/java/com/cocotaxi/app/CocotaxiAccessibilityService.java
            diagnostic = "Leyendo " + cards.size() + " ofertas visibles";
          } else {
            CocotaxiOverlayService.clearOffer();
-@@ -407,8 +409,8 @@
+@@ -410,8 +412,8 @@
    }
  
    private void handleOffers(
@@ -133,8 +133,8 @@ diff -ruN a/app/src/main/java/com/cocotaxi/app/CocotaxiAccessibilityService.java
      Path path = new Path();
 diff -ruN a/app/src/main/java/com/cocotaxi/app/MainActivity.java b/app/src/main/java/com/cocotaxi/app/MainActivity.java
 --- a/app/src/main/java/com/cocotaxi/app/MainActivity.java	2026-09-20 07:53:40.000000000 +0000
-+++ b/app/src/main/java/com/cocotaxi/app/MainActivity.java	2026-09-20 08:59:30.073558909 +0000
-@@ -689,7 +689,12 @@
++++ b/app/src/main/java/com/cocotaxi/app/MainActivity.java	2026-09-20 08:59:30.074787817 +0000
+@@ -689,7 +689,11 @@
              }),
          new LinearLayout.LayoutParams(0, -2, .8f));
      gapHorizontal(controls, 6);
@@ -147,7 +147,7 @@ diff -ruN a/app/src/main/java/com/cocotaxi/app/MainActivity.java b/app/src/main/
      body.addView(controls);
      gap(body, compactUi ? 4 : 8);
      LinearLayout status = card(body, null, 0);
-@@ -1316,8 +1321,12 @@
+@@ -1316,8 +1320,12 @@
      pinText.addView(bold("PIN de inicio", compactUi ? 11.5f : 13, WHITE));
      pinText.addView(text(PinStore.enabled(this) ? "Activado · se pedirá al abrir Coco" : "Desactivado", compactUi ? 9.5f : 10.5f, MUTED));
      pinRow.addView(pinText, new LinearLayout.LayoutParams(0, -2, 1));
@@ -163,13 +163,12 @@ diff -ruN a/app/src/main/java/com/cocotaxi/app/MainActivity.java b/app/src/main/
  
      LinearLayout access = card(body, "APLICACIÓN", LineIconView.GEAR);
 diff -ruN a/app/src/test/java/com/cocotaxi/app/CardAccessibilityTest.java b/app/src/test/java/com/cocotaxi/app/CardAccessibilityTest.java
---- a/app/src/test/java/com/cocotaxi/app/CardAccessibilityTest.java	2026-09-20 06:54:24.000000000 +0000
-+++ b/app/src/test/java/com/cocotaxi/app/CardAccessibilityTest.java	2026-09-20 08:59:59.932407967 +0000
-@@ -74,4 +74,20 @@
+--- a/app/src/test/java/com/cocotaxi/app/CardAccessibilityTest.java	2026-09-19 10:39:44.000000000 +0000
++++ b/app/src/test/java/com/cocotaxi/app/CardAccessibilityTest.java	2026-09-20 08:59:59.932368623 +0000
+@@ -76,4 +76,19 @@
      n.setEnabled(false);
      assertFalse(TextCollector.hasAccept(n));
    }
-+
 +  @Test
 +  public void listAutoAcceptCanTargetSingleOrBoundedBestCard() {
 +    Offer bounded = new Offer();
@@ -184,15 +183,15 @@ diff -ruN a/app/src/test/java/com/cocotaxi/app/CardAccessibilityTest.java b/app/
 +    assertFalse(CocotaxiAccessibilityService.canTargetAccept(
 +        java.util.Arrays.asList(first, unbounded), 2, true, unbounded));
 +  }
++
  }
 diff -ruN a/app/src/test/java/com/cocotaxi/app/FormulaTest.java b/app/src/test/java/com/cocotaxi/app/FormulaTest.java
---- a/app/src/test/java/com/cocotaxi/app/FormulaTest.java	2026-09-20 06:54:24.000000000 +0000
-+++ b/app/src/test/java/com/cocotaxi/app/FormulaTest.java	2026-09-20 08:59:59.932234422 +0000
-@@ -298,4 +298,27 @@
-     assertFalse(noKm.r.accept);
-     assertTrue(noKm.r.reason.contains("Faltan kilómetros"));
+--- a/app/src/test/java/com/cocotaxi/app/FormulaTest.java	2026-09-20 07:53:40.000000000 +0000
++++ b/app/src/test/java/com/cocotaxi/app/FormulaTest.java	2026-09-20 08:59:59.932273122 +0000
+@@ -298,4 +298,24 @@
+     v.mapDemand = false;
+     assertEquals(0, DemandModel.level(v, now, 3, now));
    }
-+
 +  @Test
 +  public void eightHundredPerHourUsesTotalMinutesNotFareSize() {
 +    SettingsStore.Values v = values();
