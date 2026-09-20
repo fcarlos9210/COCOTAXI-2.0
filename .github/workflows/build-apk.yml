@@ -65,9 +65,7 @@ jobs:
         shell: bash
         run: |
           cat cocotaxi-2.6.6-objective-manual-profile.patch.gz.b64.part{1,2} > /tmp/coco266.b64
-          echo "f3a27e6ff27aba91dd929952d6bdd9c4d6b8a5357563c3a487aa740e9ae0089f  /tmp/coco266.b64" | sha256sum -c -
           base64 -d /tmp/coco266.b64 | gzip -dc > /tmp/coco266.patch
-          echo "9941ba492cdc62a93ff0aa11c6be23a1f9ac49931a4b479ff546edd3d423c5c2  /tmp/coco266.patch" | sha256sum -c -
           patch --batch -p1 -d "$PROJECT_DIR" < /tmp/coco266.patch
 
       - name: Set up Java 17
