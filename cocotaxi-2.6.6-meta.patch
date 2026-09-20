@@ -1,0 +1,28 @@
+--- /dev/null
++++ b/CAMBIOS_2.6.6.md
+@@ -0,0 +1,12 @@
++# COCOTAXI 2.6.6 — objetivo, viajes manuales y perfil
++
++- Objetivo actual = dinero que falta / tiempo restante de jornada; se elimina el promedio acumulado por hora de esa tarjeta.
++- Los viajes manuales suman sus minutos de golpe a En servicio y Conectado, sin activar contador vivo.
++- Un viaje manual puede asociarse a la sesión actual, pausada o a una sesión anterior seleccionada.
++- Editar/eliminar/restaurar un viaje manual ajusta también los minutos conectados de esa sesión.
++- El modal Cabify «Ir a origen» con «Navegar / Ver ruta» inicia En servicio incluso si el clic manual fue demasiado rápido para capturar la oferta.
++- Gestionar viaje, selección de sesión y opciones de PIN usan botones visibles en lugar de listas de texto.
++- Se elimina la perilla «Oferta y pago verificados»; la pareja se valida automáticamente cuando existe oferta original.
++- Perfil concentra PIN, vibración, activación, permisos y autor en una sola tarjeta.
++- Activar abre una ventana con estado, código de dispositivo, WhatsApp, comprobar activación y Cancelar.
++- versionName 2.6.6 / versionCode 30.
+--- a/app/build.gradle
++++ b/app/build.gradle
+@@ -10,8 +10,8 @@
+         applicationId 'com.cocotaxi.app'
+         minSdk 26
+         targetSdk 36
+-        versionCode 29
+-        versionName '2.6.5'
++        versionCode 30
++        versionName '2.6.6'
+     }
+ 
+     compileOptions {
