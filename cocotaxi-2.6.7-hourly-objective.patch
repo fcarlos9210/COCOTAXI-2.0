@@ -13,14 +13,14 @@
      compileOptions {
 --- a/app/src/main/java/com/cocotaxi/app/MainActivity.java
 +++ b/app/src/main/java/com/cocotaxi/app/MainActivity.java
-@@ -707,20 +707,22 @@
+@@ -707,19 +707,21 @@
      LinearLayout main = card(body, "OBJETIVO ACTUAL", LineIconView.CHART);
      LinearLayout r = row();
      LinearLayout left = col();
 -    // Forward-looking target: remaining money divided by remaining jornada time. The previous
 -    // accumulated earnings/hour figure is deliberately removed because it is not an objective.
-+    // "Objetivo actual" is the driver's real accumulated hourly average for this session.
-+    // It turns red below the configured objective and green when the objective is met or exceeded.
++    // "Objetivo actual" is the real accumulated hourly average for this session.
++    // Below the configured objective it is red; meeting or exceeding it turns it green.
      double appMoney = s.money;
 -    double currentGoal =
 -        PromotionMath.requiredHourly(v.dailyGoal, v.targetHoursDay, s.minutes, appMoney);
@@ -50,7 +50,7 @@
      LinearLayout session = card(body, "Tu sesión", LineIconView.CLOCK);
      LinearLayout stats = row();
      metric(stats, "Viajes", String.valueOf(s.trips), WHITE);
-@@ -757,25 +757,17 @@
+@@ -757,25 +757,18 @@
          () -> {
            CocoStore.Session live = dashboardSession();
            double liveAppMoney = live.money;
@@ -85,7 +85,7 @@
            updateMetrics(
 --- a/app/src/main/java/com/cocotaxi/app/GaugeView.java
 +++ b/app/src/main/java/com/cocotaxi/app/GaugeView.java
-@@ -36,15 +36,18 @@
+@@ -38,15 +38,17 @@
      paint.setStrokeWidth(stroke);
      paint.setColor(Color.rgb(23, 54, 80));
      canvas.drawArc(arc, 135f, 270f, false, paint);
