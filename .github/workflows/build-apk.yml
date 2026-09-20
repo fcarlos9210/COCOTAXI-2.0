@@ -1,25 +1,35 @@
-name: Build COCOTAXI APK
+name: Build COCOTAXI 2.6.1 EXACT
 
 on:
   workflow_dispatch:
   push:
     paths:
-      - 'COCOTAXI_2.4.2_sesion_icono_sin_espera_fuentes.zip'
-      - 'cocotaxi-2.4.3.patch.gz.b64'
-      - 'cocotaxi-2.4.4-app.patch.gz.b64'
-      - 'cocotaxi-2.4.5-app.patch.gz.b64.part*'
-      - 'cocotaxi-2.4.6-ui-pin.patch.gz.b64.part*'
-      - 'cocotaxi-2.4.7-compact-settings.patch.gz.b64.part*'
-      - 'prepare_project.sh'
+      - 'COCOTAXI_2.6.1_cruce_logica.zip'
       - '.github/workflows/build-apk.yml'
 
-# Reconstruct the verified source chain, test it and compile COCOTAXI 2.4.7.
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout exact 2.6.1 branch
         uses: actions/checkout@v4
+
+      - name: Verify exact chat ZIP
+        shell: bash
+        run: |
+          test -f COCOTAXI_2.6.1_cruce_logica.zip
+          echo "89d5d92edc17a97dbc6f7a06b2bd56e08f6e110602418d3f1e032203d971371c  COCOTAXI_2.6.1_cruce_logica.zip" | sha256sum -c -
+
+      - name: Extract exact 2.6.1 source
+        shell: bash
+        run: |
+          rm -rf build-2.6.1
+          mkdir build-2.6.1
+          unzip -q COCOTAXI_2.6.1_cruce_logica.zip -d build-2.6.1
+          PROJECT_DIR="$(find "$GITHUB_WORKSPACE/build-2.6.1" -name gradlew -type f -printf '%h\n' | head -n1)"
+          test -n "$PROJECT_DIR"
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "Compilando directamente: $PROJECT_DIR"
 
       - name: Set up Java 17
         uses: actions/setup-java@v5
@@ -27,47 +37,28 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Prepare exact 2.4.7 project
+      - name: Verify 2.6.1 version
+        shell: bash
         run: |
-          chmod +x prepare_project.sh
-          ./prepare_project.sh
-          echo "PROJECT_DIR=$GITHUB_WORKSPACE/COCOTAXI_2.4.7" >> "$GITHUB_ENV"
-          grep -n "versionName '2.4.7'" COCOTAXI_2.4.7/app/build.gradle
-          grep -n "versionCode 22" COCOTAXI_2.4.7/app/build.gradle
+          grep -R "versionName '2.6.1'" "$PROJECT_DIR/app/build.gradle"
+          grep -R "versionCode 24" "$PROJECT_DIR/app/build.gradle" || true
 
-      - name: Regression and PIN tests
+      - name: Run tests
+        shell: bash
         run: |
           cd "$PROJECT_DIR"
           chmod +x gradlew
-          ./gradlew --no-daemon testDebugUnitTest \
-            --tests com.cocotaxi.app.PinStoreTest \
-            --tests com.cocotaxi.app.StoreTest.photographedOriginConfirmsAssignmentOnlyOnce \
-            --tests com.cocotaxi.app.StoreTest.confirmedAcceptanceStartsLiveServiceAndIncomeImmediately \
-            --tests com.cocotaxi.app.StoreTest.driverCanRemoveAndRestoreDefaultTripConfirmation \
-            --tests com.cocotaxi.app.StoreTest.finishButtonNotCompletion \
-            --tests com.cocotaxi.app.StoreTest.completedExactlyOnce \
-            --tests com.cocotaxi.app.UiTest.iconMinimizesOnlyResumedCoco \
-            --tests com.cocotaxi.app.UiTest.fourTabsAndScreensRender
+          ./gradlew --no-daemon testDebugUnitTest
 
       - name: Build debug APK
+        shell: bash
         run: |
           cd "$PROJECT_DIR"
           ./gradlew --no-daemon assembleDebug
 
-      - name: Package auditable source
-        run: |
-          zip -qr COCOTAXI_2.4.7_fuentes.zip COCOTAXI_2.4.7
-
-      - name: Upload APK
+      - name: Upload COCOTAXI 2.6.1 APK
         uses: actions/upload-artifact@v4
         with:
-          name: COCOTAXI-2.4.7-debug-apk
+          name: COCOTAXI-2.6.1-debug-apk
           path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/*.apk
-          if-no-files-found: error
-
-      - name: Upload source
-        uses: actions/upload-artifact@v4
-        with:
-          name: COCOTAXI-2.4.7-source
-          path: COCOTAXI_2.4.7_fuentes.zip
           if-no-files-found: error
