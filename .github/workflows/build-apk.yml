@@ -41,7 +41,7 @@ jobs:
         shell: bash
         run: |
           grep -R "versionName '2.6.1'" "$PROJECT_DIR/app/build.gradle"
-          grep -R "versionCode 24" "$PROJECT_DIR/app/build.gradle" || true
+          grep -R "versionCode 25" "$PROJECT_DIR/app/build.gradle"
 
       - name: Run tests
         shell: bash
