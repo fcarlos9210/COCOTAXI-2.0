@@ -1,0 +1,36 @@
+--- a/app/build.gradle
++++ b/app/build.gradle
+@@ -10,8 +10,8 @@
+         applicationId 'com.cocotaxi.app'
+         minSdk 26
+         targetSdk 36
+-        versionCode 32
+-        versionName '2.6.8'
++        versionCode 33
++        versionName '2.6.9'
+     }
+ 
+     compileOptions {
+--- /dev/null
++++ b/app/src/main/res/drawable/splash_logo_safe.xml
+@@ -0,0 +1,9 @@
++<?xml version="1.0" encoding="utf-8"?>
++<inset xmlns:android="http://schemas.android.com/apk/res/android"
++    android:insetLeft="44dp"
++    android:insetTop="44dp"
++    android:insetRight="44dp"
++    android:insetBottom="44dp">
++    <bitmap android:gravity="fill"
++        android:src="@drawable/cocotaxi_foreground" />
++</inset>
+--- a/app/src/main/res/values-v31/styles.xml
++++ b/app/src/main/res/values-v31/styles.xml
+@@ -8,7 +8,7 @@
+         <item name="android:alertDialogTheme">@style/CocoDialog</item>
+         <item name="android:windowBackground">@drawable/app_launch_background</item>
+         <item name="android:windowSplashScreenBackground">@color/splash_background</item>
+-        <item name="android:windowSplashScreenAnimatedIcon">@drawable/cocotaxi_foreground</item>
++        <item name="android:windowSplashScreenAnimatedIcon">@drawable/splash_logo_safe</item>
+         <item name="android:windowSplashScreenIconBackgroundColor">@color/splash_background</item>
+     </style>
+ </resources>
