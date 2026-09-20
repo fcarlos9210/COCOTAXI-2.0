@@ -1,0 +1,216 @@
+diff -ruN a/CAMBIOS_2.6.4.md b/CAMBIOS_2.6.4.md
+--- a/CAMBIOS_2.6.4.md	1970-01-01 00:00:00.000000000 +0000
++++ b/CAMBIOS_2.6.4.md	2026-09-20 08:59:59.932557743 +0000
+@@ -0,0 +1,8 @@
++# COCOTAXI 2.6.4 — autoaceptación y botones
++
++- Corrige una regresión de 2.6.2/2.6.3: una oferta dentro de RecyclerView podía mostrarse como ACEPTABLE pero no autoaceptarse.
++- En listas Coco usa tarjetas con límites de pantalla y pulsa el botón Aceptar de la tarjeta elegida; el gesto de respaldo solo se usa cuando hay un único botón Aceptar visible.
++- Mantiene el criterio económico: el importe por sí solo no decide; se usa UYU/h sobre minutos totales. Con objetivo 800 UYU/h, 600 UYU/60 min y 200 UYU/20 min equivalen a 600 UYU/h y no cumplen en demanda media; 200 UYU/15 min equivale a 800 UYU/h.
++- Botón Configurar del perfil más ancho y con tipografía menor.
++- Botón Desconectar más ancho y con tipografía menor.
++- versionName 2.6.4 / versionCode 28.
+diff -ruN a/app/build.gradle b/app/build.gradle
+--- a/app/build.gradle	2026-09-20 07:53:40.000000000 +0000
++++ b/app/build.gradle	2026-09-20 08:59:30.073263062 +0000
+@@ -10,8 +10,8 @@
+         applicationId 'com.cocotaxi.app'
+         minSdk 26
+         targetSdk 36
+-        versionCode 27
+-        versionName '2.6.3'
++        versionCode 28
++        versionName '2.6.4'
+     }
+ 
+     compileOptions {
+diff -ruN a/app/src/main/java/com/cocotaxi/app/CocotaxiAccessibilityService.java b/app/src/main/java/com/cocotaxi/app/CocotaxiAccessibilityService.java
+--- a/app/src/main/java/com/cocotaxi/app/CocotaxiAccessibilityService.java	2026-09-19 18:48:52.000000000 +0000
++++ b/app/src/main/java/com/cocotaxi/app/CocotaxiAccessibilityService.java	2026-09-20 08:59:59.931893150 +0000
+@@ -349,20 +349,22 @@
+             rememberDetail(single, true);
+             previous = single;
+             previousAt = SystemClock.elapsedRealtime();
+-            handleOffers(tree, single, false, false, true, session, false);
++            handleOffers(root, tree, single, false, false, true, session, false);
+             diagnostic = "Oferta detectada al instante";
+             return;
+           }
+           if (recentOcrOffer != null && SystemClock.elapsedRealtime() - recentOcrAt <= 5000) {
+             List<Offer> single = Collections.singletonList(recentOcrOffer);
+             rememberDetail(single, true);
+-            handleOffers(tree, single, true, false, true, session, true);
++            handleOffers(root, tree, single, true, false, true, session, true);
+             diagnostic = "Oferta OCR + botón accesible";
+             return;
+           }
+         }
+ 
+-        List<Offer> cards = OfferParser.parseVisibleNormalized(normalized);
++        // List containers need card geometry so Coco can target the exact Accept button.
++        List<Offer> cards = list ? TextCollector.cards(root) : OfferParser.parseVisibleNormalized(normalized);
++        if (cards.isEmpty()) cards = OfferParser.parseVisibleNormalized(normalized);
+         if (cards.isEmpty()) {
+           Offer rootOffer = OfferParser.parseNormalized(text, normalized, CABIFY);
+           if (rootOffer.hasEnoughForDecision()) cards = Collections.singletonList(rootOffer);
+@@ -374,7 +376,7 @@
+           rememberDetail(cards, !list && hasAccept);
+           previous = cards;
+           previousAt = SystemClock.elapsedRealtime();
+-          handleOffers(tree, cards, false, list, hasAccept, session, false);
++          handleOffers(root, tree, cards, false, list, hasAccept, session, false);
+           diagnostic = "Leyendo " + cards.size() + " ofertas visibles";
+         } else {
+           CocotaxiOverlayService.clearOffer();
+@@ -407,8 +409,8 @@
+   }
+ 
+   private void handleOffers(
+-      TextCollector.Snapshot tree, List<Offer> cards, boolean fromOcr, boolean list, boolean hasAccept,
+-      CocoStore.Session session, boolean requireStable) {
++      AccessibilityNodeInfo root, TextCollector.Snapshot tree, List<Offer> cards, boolean fromOcr,
++      boolean list, boolean hasAccept, CocoStore.Session session, boolean requireStable) {
+     CocoStore store = CocoStore.get(this);
+     // Refresh the session only when a real offer exists; map polling stays on the cheap cache.
+     session = sessionSnapshot(store, true);
+@@ -426,7 +428,7 @@
+     // Critical ordering: decide -> click Cabify -> persist -> draw overlay. Window rendering must never
+     // delay the Accept action.
+     lastDispatchNs = 0L;
+-    int click = maybeClick(tree, cards, v, result, list, hasAccept, requireStable);
++    int click = maybeClick(root, tree, cards, v, result, list, hasAccept, requireStable);
+     long completedNs = SystemClock.elapsedRealtimeNanos();
+     if (result.accept && v.autoAccept && click != CLICK_NONE) {
+       long dispatchNs = lastDispatchNs > 0L ? lastDispatchNs : completedNs;
+@@ -443,13 +445,18 @@
+   }
+ 
+   private int maybeClick(
+-      TextCollector.Snapshot tree, List<Offer> cards, SettingsStore.Values v, DecisionEngine.Result r,
+-      boolean list, boolean hasAccept, boolean requireStable) {
+-    if (cards.size() != 1 || list || !hasAccept) {
++      AccessibilityNodeInfo root, TextCollector.Snapshot tree, List<Offer> cards,
++      SettingsStore.Values v, DecisionEngine.Result r, boolean list, boolean hasAccept,
++      boolean requireStable) {
++    if (!hasAccept || cards.isEmpty()) {
+       stableKey = "";
+       return CLICK_NONE;
+     }
+     if (!v.autoAccept || r == null || !r.accept) return CLICK_NONE;
++    if (!canTargetAccept(cards, tree.acceptCount, list, r.offer)) {
++      stableKey = "";
++      return CLICK_NONE;
++    }
+ 
+     long now = SystemClock.elapsedRealtime();
+     String key = r.offer.key + "@" + r.offer.top;
+@@ -469,8 +476,10 @@
+ 
+     // Reserve the debounce before dispatching: ACTION_CLICK may immediately generate a click event.
+     clickedAt = now;
+-    boolean clicked = tree.clickAccept();
+-    if (!clicked) clicked = tapAcceptWithGesture(tree.acceptBounds);
++    boolean exactListTarget = list && r.offer != null && r.offer.bottom > r.offer.top;
++    boolean clicked = exactListTarget ? TextCollector.clickOffer(root, r.offer) : tree.clickAccept();
++    // Gesture fallback is safe only when there is exactly one visible Accept target.
++    if (!clicked && tree.acceptCount == 1) clicked = tapAcceptWithGesture(tree.acceptBounds);
+     lastDispatchNs = SystemClock.elapsedRealtimeNanos();
+ 
+     // Persist only after dispatching the click. SQLite must not sit in front of the driver's Accept.
+@@ -491,6 +500,13 @@
+     return clicked ? CLICK_SUCCESS : CLICK_FAILURE;
+   }
+ 
++  static boolean canTargetAccept(List<Offer> cards, int acceptCount, boolean list, Offer offer) {
++    if (cards == null || cards.isEmpty() || acceptCount <= 0 || offer == null) return false;
++    if (!list) return cards.size() == 1;
++    if (cards.size() == 1 && acceptCount == 1) return true;
++    return offer.bottom > offer.top;
++  }
++
+   private boolean tapAcceptWithGesture(Rect b) {
+     if (Build.VERSION.SDK_INT < 24 || b == null || b.isEmpty()) return false;
+     Path path = new Path();
+diff -ruN a/app/src/main/java/com/cocotaxi/app/MainActivity.java b/app/src/main/java/com/cocotaxi/app/MainActivity.java
+--- a/app/src/main/java/com/cocotaxi/app/MainActivity.java	2026-09-20 07:53:40.000000000 +0000
++++ b/app/src/main/java/com/cocotaxi/app/MainActivity.java	2026-09-20 08:59:30.073558909 +0000
+@@ -689,7 +689,12 @@
+             }),
+         new LinearLayout.LayoutParams(0, -2, .8f));
+     gapHorizontal(controls, 6);
+-    controls.addView(sessionButton("■ Desconectar", !s.active, this::stop), new LinearLayout.LayoutParams(0, -2, 1f));
++    TextView disconnect = sessionButton("■ Desconectar", !s.active, this::stop);
++    disconnect.setTextSize(compactUi ? 10.8f : 12.2f);
++    disconnect.setMinHeight(dp(compactUi ? 42 : 48));
++    disconnect.setPadding(dp(8), dp(compactUi ? 6 : 8), dp(8), dp(compactUi ? 6 : 8));
++    controls.addView(disconnect, new LinearLayout.LayoutParams(0, -2, 1.28f));
+     body.addView(controls);
+     gap(body, compactUi ? 4 : 8);
+     LinearLayout status = card(body, null, 0);
+@@ -1316,8 +1321,12 @@
+     pinText.addView(bold("PIN de inicio", compactUi ? 11.5f : 13, WHITE));
+     pinText.addView(text(PinStore.enabled(this) ? "Activado · se pedirá al abrir Coco" : "Desactivado", compactUi ? 9.5f : 10.5f, MUTED));
+     pinRow.addView(pinText, new LinearLayout.LayoutParams(0, -2, 1));
+-    pinRow.addView(button(PinStore.enabled(this) ? "Cambiar" : "Configurar", this::configurePin),
+-        new LinearLayout.LayoutParams(dp(compactUi ? 88 : 102), -2));
++    TextView pinAction = button(PinStore.enabled(this) ? "Cambiar" : "Configurar", this::configurePin);
++    pinAction.setTextSize(compactUi ? 10.8f : 12.0f);
++    pinAction.setMinHeight(dp(compactUi ? 42 : 46));
++    pinAction.setPadding(dp(8), dp(compactUi ? 6 : 8), dp(8), dp(compactUi ? 6 : 8));
++    pinRow.addView(pinAction,
++        new LinearLayout.LayoutParams(dp(compactUi ? 112 : 126), -2));
+     security.addView(pinRow);
+ 
+     LinearLayout access = card(body, "APLICACIÓN", LineIconView.GEAR);
+diff -ruN a/app/src/test/java/com/cocotaxi/app/CardAccessibilityTest.java b/app/src/test/java/com/cocotaxi/app/CardAccessibilityTest.java
+--- a/app/src/test/java/com/cocotaxi/app/CardAccessibilityTest.java	2026-09-20 06:54:24.000000000 +0000
++++ b/app/src/test/java/com/cocotaxi/app/CardAccessibilityTest.java	2026-09-20 08:59:59.932407967 +0000
+@@ -74,4 +74,20 @@
+     n.setEnabled(false);
+     assertFalse(TextCollector.hasAccept(n));
+   }
++
++  @Test
++  public void listAutoAcceptCanTargetSingleOrBoundedBestCard() {
++    Offer bounded = new Offer();
++    bounded.top = 350; bounded.bottom = 650;
++    assertTrue(CocotaxiAccessibilityService.canTargetAccept(
++        java.util.Collections.singletonList(bounded), 1, true, bounded));
++    Offer first = new Offer();
++    first.top = 0; first.bottom = 300;
++    assertTrue(CocotaxiAccessibilityService.canTargetAccept(
++        java.util.Arrays.asList(first, bounded), 2, true, bounded));
++    Offer unbounded = new Offer();
++    assertFalse(CocotaxiAccessibilityService.canTargetAccept(
++        java.util.Arrays.asList(first, unbounded), 2, true, unbounded));
++  }
+ }
+diff -ruN a/app/src/test/java/com/cocotaxi/app/FormulaTest.java b/app/src/test/java/com/cocotaxi/app/FormulaTest.java
+--- a/app/src/test/java/com/cocotaxi/app/FormulaTest.java	2026-09-20 06:54:24.000000000 +0000
++++ b/app/src/test/java/com/cocotaxi/app/FormulaTest.java	2026-09-20 08:59:59.932234422 +0000
+@@ -298,4 +298,27 @@
+     assertFalse(noKm.r.accept);
+     assertTrue(noKm.r.reason.contains("Faltan kilómetros"));
+   }
++
++  @Test
++  public void eightHundredPerHourUsesTotalMinutesNotFareSize() {
++    SettingsStore.Values v = values();
++    v.goalMode = 2;
++    v.realGoalHour = 800;
++    v.operationalGoalHour = 800;
++    v.objectiveHour = 800;
++    v.waitPassenger = 0;
++    CocoStore.Session s = session();
++    DecisionEngine.Result a = DecisionEngine.evaluate(offer(600, 0, 60), v, s, 2, null);
++    assertEquals(600, a.hourly, .001);
++    assertFalse(a.accept);
++    DecisionEngine.Result b = DecisionEngine.evaluate(offer(200, 0, 20), v, s, 2, null);
++    assertEquals(600, b.hourly, .001);
++    assertFalse(b.accept);
++    DecisionEngine.Result c = DecisionEngine.evaluate(offer(200, 0, 15), v, s, 2, null);
++    assertEquals(800, c.hourly, .001);
++    assertTrue(c.accept);
++  }
++
+ }
