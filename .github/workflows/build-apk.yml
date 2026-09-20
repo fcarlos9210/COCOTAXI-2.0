@@ -10,7 +10,11 @@ on:
       - 'cocotaxi-2.6.4-autoaccept-ui.patch'
       - 'cocotaxi-2.6.5-license-manual-ui.patch.gz.b64.part*'
       - 'cocotaxi-2.6.5-license-testfix.patch'
-      - 'cocotaxi-2.6.6-objective-manual-profile.patch.gz.b64.part*'
+      - 'cocotaxi-2.6.6-meta.patch'
+      - 'cocotaxi-2.6.6-store.patch'
+      - 'cocotaxi-2.6.6-access.patch'
+      - 'cocotaxi-2.6.6-ui.patch'
+      - 'cocotaxi-2.6.6-tests.patch'
       - '.github/workflows/build-apk.yml'
 
 jobs:
@@ -61,12 +65,14 @@ jobs:
           patch --batch -p2 -d "$PROJECT_DIR" < /tmp/coco265.patch
           patch --batch -p1 -d "$PROJECT_DIR" < cocotaxi-2.6.5-license-testfix.patch
 
-      - name: Rebuild and verify 2.6.6 patch
+      - name: Apply COCOTAXI 2.6.6 objective manual and profile fixes
         shell: bash
         run: |
-          cat cocotaxi-2.6.6-objective-manual-profile.patch.gz.b64.part{1,2} > /tmp/coco266.b64
-          base64 -d /tmp/coco266.b64 | gzip -dc > /tmp/coco266.patch
-          patch --batch -p1 -d "$PROJECT_DIR" < /tmp/coco266.patch
+          patch --batch -p1 -d "$PROJECT_DIR" < cocotaxi-2.6.6-meta.patch
+          patch --batch -p1 -d "$PROJECT_DIR" < cocotaxi-2.6.6-store.patch
+          patch --batch -p1 -d "$PROJECT_DIR" < cocotaxi-2.6.6-access.patch
+          patch --batch -p1 -d "$PROJECT_DIR" < cocotaxi-2.6.6-ui.patch
+          patch --batch -p1 -d "$PROJECT_DIR" < cocotaxi-2.6.6-tests.patch
 
       - name: Set up Java 17
         uses: actions/setup-java@v5
