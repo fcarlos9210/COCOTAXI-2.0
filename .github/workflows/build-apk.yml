@@ -1,4 +1,4 @@
-name: Build COCOTAXI 2.6.4 FINAL
+name: Build COCOTAXI 2.6.5 FINAL
 
 on:
   workflow_dispatch:
@@ -8,6 +8,7 @@ on:
       - 'cocotaxi-2.6.2-final.patch'
       - 'cocotaxi-2.6.3-ui-goals.patch'
       - 'cocotaxi-2.6.4-autoaccept-ui.patch'
+      - 'cocotaxi-2.6.5-license-manual-ui.patch.gz.b64.part*'
       - '.github/workflows/build-apk.yml'
 
 jobs:
@@ -26,10 +27,10 @@ jobs:
       - name: Extract exact source
         shell: bash
         run: |
-          rm -rf build-2.6.4
-          mkdir build-2.6.4
-          unzip -q COCOTAXI_2.6.1_cruce_logica.zip -d build-2.6.4
-          PROJECT_DIR="$(find "$GITHUB_WORKSPACE/build-2.6.4" -name gradlew -type f -printf '%h\n' | head -n1)"
+          rm -rf build-2.6.5
+          mkdir build-2.6.5
+          unzip -q COCOTAXI_2.6.1_cruce_logica.zip -d build-2.6.5
+          PROJECT_DIR="$(find "$GITHUB_WORKSPACE/build-2.6.5" -name gradlew -type f -printf '%h\n' | head -n1)"
           test -n "$PROJECT_DIR"
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
@@ -48,17 +49,28 @@ jobs:
         run: |
           patch --batch -p1 -d "$PROJECT_DIR" < cocotaxi-2.6.4-autoaccept-ui.patch
 
+      - name: Rebuild and verify 2.6.5 patch
+        shell: bash
+        run: |
+          cat cocotaxi-2.6.5-license-manual-ui.patch.gz.b64.part{1,2,3,4} > /tmp/coco265.b64
+          echo "3c3329f1226e21d00c55869e1e92fe9eb84e8c2a2f4b68a18b4946f0c47d0728  /tmp/coco265.b64" | sha256sum -c -
+          base64 -d /tmp/coco265.b64 | gzip -dc > /tmp/coco265.patch
+          echo "c3bd47e87873d5f058ae169926093b72b54b94d1cb932b4db6deee6291cdcb81  /tmp/coco265.patch" | sha256sum -c -
+          patch --batch -p2 -d "$PROJECT_DIR" < /tmp/coco265.patch
+
       - name: Set up Java 17
         uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Verify final version
+      - name: Verify final version and public license surface
         shell: bash
         run: |
-          grep -R "versionName '2.6.4'" "$PROJECT_DIR/app/build.gradle"
-          grep -R "versionCode 28" "$PROJECT_DIR/app/build.gradle"
+          grep -R "versionName '2.6.5'" "$PROJECT_DIR/app/build.gradle"
+          grep -R "versionCode 29" "$PROJECT_DIR/app/build.gradle"
+          grep -R "cocotaxi-license-api.cocotaxi-licenses-alecandido998.workers.dev" "$PROJECT_DIR/app/src/main/java/com/cocotaxi/app/LicenseApiClient.java"
+          ! grep -R "admin" "$PROJECT_DIR/app/src/main/java/com/cocotaxi/app/LicenseApiClient.java"
 
       - name: Run complete unit test suite
         shell: bash
@@ -77,18 +89,18 @@ jobs:
         shell: bash
         run: |
           cd "$(dirname "$PROJECT_DIR")"
-          zip -qr COCOTAXI_2.6.4_fuentes.zip "$(basename "$PROJECT_DIR")"
+          zip -qr COCOTAXI_2.6.5_fuentes.zip "$(basename "$PROJECT_DIR")"
 
-      - name: Upload COCOTAXI 2.6.3 APK
+      - name: Upload COCOTAXI 2.6.5 APK
         uses: actions/upload-artifact@v4
         with:
-          name: COCOTAXI-2.6.4-debug-apk
+          name: COCOTAXI-2.6.5-debug-apk
           path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
 
-      - name: Upload COCOTAXI 2.6.3 source
+      - name: Upload COCOTAXI 2.6.5 source
         uses: actions/upload-artifact@v4
         with:
-          name: COCOTAXI-2.6.4-source
-          path: build-2.6.4/COCOTAXI_2.6.4_fuentes.zip
+          name: COCOTAXI-2.6.5-source
+          path: build-2.6.5/COCOTAXI_2.6.5_fuentes.zip
           if-no-files-found: error
