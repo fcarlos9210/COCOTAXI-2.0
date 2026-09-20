@@ -1,4 +1,4 @@
-name: Build COCOTAXI 2.6.6 FINAL
+name: Build COCOTAXI 2.6.7 FINAL
 
 on:
   workflow_dispatch:
@@ -15,6 +15,7 @@ on:
       - 'cocotaxi-2.6.6-access.patch'
       - 'cocotaxi-2.6.6-ui.patch'
       - 'cocotaxi-2.6.6-tests.patch'
+      - 'cocotaxi-2.6.7-hourly-objective.patch'
       - '.github/workflows/build-apk.yml'
 
 jobs:
@@ -74,6 +75,11 @@ jobs:
           patch --batch -p1 -d "$PROJECT_DIR" < cocotaxi-2.6.6-ui.patch
           patch --batch -p1 -d "$PROJECT_DIR" < cocotaxi-2.6.6-tests.patch
 
+      - name: Apply COCOTAXI 2.6.7 hourly objective display
+        shell: bash
+        run: |
+          patch --batch -p1 -d "$PROJECT_DIR" < cocotaxi-2.6.7-hourly-objective.patch
+
       - name: Set up Java 17
         uses: actions/setup-java@v5
         with:
@@ -83,8 +89,8 @@ jobs:
       - name: Verify final version and public license surface
         shell: bash
         run: |
-          grep -R "versionName '2.6.6'" "$PROJECT_DIR/app/build.gradle"
-          grep -R "versionCode 30" "$PROJECT_DIR/app/build.gradle"
+          grep -R "versionName '2.6.7'" "$PROJECT_DIR/app/build.gradle"
+          grep -R "versionCode 31" "$PROJECT_DIR/app/build.gradle"
           grep -R "cocotaxi-license-api.cocotaxi-licenses-alecandido998.workers.dev" "$PROJECT_DIR/app/src/main/java/com/cocotaxi/app/LicenseApiClient.java"
           ! grep -RE "/admin|ADMIN_PANEL_PASSWORD|X-Admin|adminToken" "$PROJECT_DIR/app/src/main/java/com/cocotaxi/app/LicenseApiClient.java"
 
@@ -105,18 +111,18 @@ jobs:
         shell: bash
         run: |
           cd "$(dirname "$PROJECT_DIR")"
-          zip -qr COCOTAXI_2.6.6_fuentes.zip "$(basename "$PROJECT_DIR")"
+          zip -qr COCOTAXI_2.6.7_fuentes.zip "$(basename "$PROJECT_DIR")"
 
-      - name: Upload COCOTAXI 2.6.6 APK
+      - name: Upload COCOTAXI 2.6.7 APK
         uses: actions/upload-artifact@v4
         with:
-          name: COCOTAXI-2.6.6-debug-apk
+          name: COCOTAXI-2.6.7-debug-apk
           path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
 
-      - name: Upload COCOTAXI 2.6.6 source
+      - name: Upload COCOTAXI 2.6.7 source
         uses: actions/upload-artifact@v4
         with:
-          name: COCOTAXI-2.6.6-source
-          path: build-2.6.6/COCOTAXI_2.6.6_fuentes.zip
+          name: COCOTAXI-2.6.7-source
+          path: build-2.6.6/COCOTAXI_2.6.7_fuentes.zip
           if-no-files-found: error
