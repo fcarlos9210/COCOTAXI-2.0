@@ -9,6 +9,7 @@ on:
       - 'cocotaxi-2.6.3-ui-goals.patch'
       - 'cocotaxi-2.6.4-autoaccept-ui.patch'
       - 'cocotaxi-2.6.5-license-manual-ui.patch.gz.b64.part*'
+      - 'cocotaxi-2.6.5-license-testfix.patch'
       - '.github/workflows/build-apk.yml'
 
 jobs:
@@ -57,6 +58,7 @@ jobs:
           base64 -d /tmp/coco265.b64 | gzip -dc > /tmp/coco265.patch
           echo "c3bd47e87873d5f058ae169926093b72b54b94d1cb932b4db6deee6291cdcb81  /tmp/coco265.patch" | sha256sum -c -
           patch --batch -p2 -d "$PROJECT_DIR" < /tmp/coco265.patch
+          patch --batch -p1 -d "$PROJECT_DIR" < cocotaxi-2.6.5-license-testfix.patch
 
       - name: Set up Java 17
         uses: actions/setup-java@v5
