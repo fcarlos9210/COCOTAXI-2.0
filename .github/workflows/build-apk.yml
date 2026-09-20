@@ -9,10 +9,11 @@ on:
       - 'cocotaxi-2.4.4-app.patch.gz.b64'
       - 'cocotaxi-2.4.5-app.patch.gz.b64.part*'
       - 'cocotaxi-2.4.6-ui-pin.patch.gz.b64.part*'
+      - 'cocotaxi-2.4.7-compact-settings.patch.gz.b64.part*'
       - 'prepare_project.sh'
       - '.github/workflows/build-apk.yml'
 
-# Reconstruct the verified source chain, test it and compile COCOTAXI 2.4.6.
+# Reconstruct the verified source chain, test it and compile COCOTAXI 2.4.7.
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -26,13 +27,13 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Prepare exact 2.4.6 project
+      - name: Prepare exact 2.4.7 project
         run: |
           chmod +x prepare_project.sh
           ./prepare_project.sh
-          echo "PROJECT_DIR=$GITHUB_WORKSPACE/COCOTAXI_2.4.6" >> "$GITHUB_ENV"
-          grep -n "versionName '2.4.6'" COCOTAXI_2.4.6/app/build.gradle
-          grep -n "versionCode 21" COCOTAXI_2.4.6/app/build.gradle
+          echo "PROJECT_DIR=$GITHUB_WORKSPACE/COCOTAXI_2.4.7" >> "$GITHUB_ENV"
+          grep -n "versionName '2.4.7'" COCOTAXI_2.4.7/app/build.gradle
+          grep -n "versionCode 22" COCOTAXI_2.4.7/app/build.gradle
 
       - name: Regression and PIN tests
         run: |
@@ -55,18 +56,18 @@ jobs:
 
       - name: Package auditable source
         run: |
-          zip -qr COCOTAXI_2.4.6_fuentes.zip COCOTAXI_2.4.6
+          zip -qr COCOTAXI_2.4.7_fuentes.zip COCOTAXI_2.4.7
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: COCOTAXI-2.4.6-debug-apk
+          name: COCOTAXI-2.4.7-debug-apk
           path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
 
       - name: Upload source
         uses: actions/upload-artifact@v4
         with:
-          name: COCOTAXI-2.4.6-source
-          path: COCOTAXI_2.4.6_fuentes.zip
+          name: COCOTAXI-2.4.7-source
+          path: COCOTAXI_2.4.7_fuentes.zip
           if-no-files-found: error
