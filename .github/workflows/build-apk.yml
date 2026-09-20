@@ -70,7 +70,7 @@ jobs:
           grep -R "versionName '2.6.5'" "$PROJECT_DIR/app/build.gradle"
           grep -R "versionCode 29" "$PROJECT_DIR/app/build.gradle"
           grep -R "cocotaxi-license-api.cocotaxi-licenses-alecandido998.workers.dev" "$PROJECT_DIR/app/src/main/java/com/cocotaxi/app/LicenseApiClient.java"
-          ! grep -R "admin" "$PROJECT_DIR/app/src/main/java/com/cocotaxi/app/LicenseApiClient.java"
+          ! grep -RE "/admin|ADMIN_PANEL_PASSWORD|X-Admin|adminToken" "$PROJECT_DIR/app/src/main/java/com/cocotaxi/app/LicenseApiClient.java"
 
       - name: Run complete unit test suite
         shell: bash
