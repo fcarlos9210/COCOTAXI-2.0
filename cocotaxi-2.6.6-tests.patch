@@ -1,0 +1,91 @@
+--- a/app/src/test/java/com/cocotaxi/app/FormulaTest.java
++++ b/app/src/test/java/com/cocotaxi/app/FormulaTest.java
+@@ -318,4 +318,10 @@
+     v.mapDemand = false;
+     assertEquals(0, DemandModel.level(v, now, 3, now));
+   }
++  @Test
++  public void currentObjectiveUsesMoneyMissingOverJornadaTimeRemaining() {
++    assertEquals(850, PromotionMath.requiredHourly(8000, 10, 120, 1200), .001);
++    assertEquals(812.5, PromotionMath.requiredHourly(8000, 10, 120, 1500), .001);
++  }
++
+ }
+--- a/app/src/test/java/com/cocotaxi/app/StoreTest.java
++++ b/app/src/test/java/com/cocotaxi/app/StoreTest.java
+@@ -207,15 +207,17 @@
+     assertNull(st.activeTrip());
+     assertEquals(300, st.session().money, .001);
+     assertEquals(1, st.session().trips);
++    assertEquals(42, st.session().minutes, .001);
+     assertEquals(12, st.session().service, .001);
+     st.correct(id, 320, 0, false, 0, 15);
+     assertNull(st.activeTrip());
+     assertEquals(320, st.session().money, .001);
++    assertEquals(45, st.session().minutes, .001);
+     assertEquals(15, st.session().service, .001);
+   }
+ 
+   @Test
+-  public void manualTripDuringRunningSessionAddsMoneyTripAndServiceImmediately() {
++  public void manualTripDuringRunningSessionAddsHistoricalMinutesWithoutLiveTimer() {
+     ShadowSystemClock.advanceBy(Duration.ofMinutes(25));
+     String id = st.manual(240, 10, "Viaje manual", true);
+     CocoStore.Session s = st.session();
+@@ -223,9 +225,36 @@
+     assertNull(st.activeTrip());
+     assertEquals(240, s.money, .001);
+     assertEquals(1, s.trips);
++    assertEquals(35, s.minutes, .001);
+     assertEquals(10, s.service, .001);
+-    assertEquals(15, Math.max(0, s.minutes - s.service), .001);
+-    assertEquals(576, s.hourly(), .001);
++    assertEquals(25, Math.max(0, s.minutes - s.service), .001);
++    ShadowSystemClock.advanceBy(Duration.ofMinutes(5));
++    CocoStore.Session later = st.session();
++    assertEquals(40, later.minutes, .001);
++    assertEquals(10, later.service, .001);
++  }
++
++  @Test
++  public void manualTripCanTargetPreviousClosedSession() {
++    ShadowSystemClock.advanceBy(Duration.ofMinutes(20));
++    st.stop();
++    String old = st.session().id;
++    String id = st.manualForSession(old, 350, 8, "Viaje omitido", true);
++    assertNotNull(id);
++    assertFalse(st.session().active);
++    assertEquals(28, st.session().minutes, .001);
++    assertEquals(8, st.session().service, .001);
++    assertEquals(350, st.session().money, .001);
++  }
++
++  @Test
++  public void observedCabifyAssignmentWithoutCapturedFareStartsLiveService() {
++    String id = st.observedAssignment(null, null, false);
++    assertNotNull(id);
++    assertEquals("ASIGNADO", st.find(id).status);
++    assertEquals(0, st.session().money, .001);
++    ShadowSystemClock.advanceBy(Duration.ofSeconds(90));
++    assertEquals(1.5, st.session().service, .01);
+   }
+ 
+   @Test
+--- a/app/src/test/java/com/cocotaxi/app/UiTest.java
++++ b/app/src/test/java/com/cocotaxi/app/UiTest.java
+@@ -194,9 +194,14 @@
+       View profile = findDescription(a.getWindow().getDecorView(), "Perfil");
+       assertNotNull(profile);
+       profile.performClick();
++      assertNotNull(find(a.getWindow().getDecorView(), "PERFIL"));
+       assertNotNull(find(a.getWindow().getDecorView(), "Permisos"));
+       assertNotNull(find(a.getWindow().getDecorView(), "Vibración"));
+-      assertNotNull(find(a.getWindow().getDecorView(), "Licencia"));
++      assertNotNull(find(a.getWindow().getDecorView(), "Activación"));
++      assertNotNull(find(a.getWindow().getDecorView(), "Activar"));
++      assertNull(find(a.getWindow().getDecorView(), "WhatsApp"));
++      assertNull(find(a.getWindow().getDecorView(), "SEGURIDAD"));
++      assertNull(find(a.getWindow().getDecorView(), "APLICACIÓN"));
+       assertNotNull(find(a.getWindow().getDecorView(), "Creado por Frank Carlos"));
+     }
+   }
