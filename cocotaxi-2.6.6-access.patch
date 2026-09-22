@@ -1,0 +1,37 @@
+--- a/app/src/main/java/com/cocotaxi/app/CocotaxiAccessibilityService.java
++++ b/app/src/main/java/com/cocotaxi/app/CocotaxiAccessibilityService.java
+@@ -85,14 +85,26 @@
+         candidate = lastUnambiguousOffer;
+       else if (previous.size() == 1 && now - previousAt <= 5000) candidate = previous.get(0);
+ 
+-      if (trip == null && candidate != null) {
+-        SettingsStore.Values v = SettingsStore.load(this);
+-        int demand = demand(v);
+-        PromotionStore.Snapshot promo = promotionSnapshot(store, session);
+-        CocoStore.Calibration learned = calibration(store, candidate.kind, v);
+-        DecisionEngine.Result r = DecisionEngine.evaluate(candidate, v, session, demand, learned, promo);
+-        // Assignment is independent of the recommendation: this branch only records what Cabify already assigned.
+-        if (r.payout > 0) store.attempt(candidate, r, false);
++      if (trip == null) {
++        DecisionEngine.Result r = null;
++        if (candidate != null) {
++          SettingsStore.Values v = SettingsStore.load(this);
++          int demand = demand(v);
++          PromotionStore.Snapshot promo = promotionSnapshot(store, session);
++          CocoStore.Calibration learned = calibration(store, candidate.kind, v);
++          r = DecisionEngine.evaluate(candidate, v, session, demand, learned, promo);
++        }
++        // Cabify's "Ir a origen" + "Navegar/Ver ruta" screen is definitive assignment evidence.
++        // Even if the offer vanished before Coco captured its amount, start a zero-value assigned
++        // trip so En servicio follows the real ride. The payment can be corrected later.
++        String id = store.observedAssignment(candidate, r, false);
++        if (id != null) {
++          diagnostic =
++              candidate == null
++                  ? "Viaje aceptado detectado · importe pendiente"
++                  : "Viaje aceptado detectado · en servicio";
++          cachedSessionAt = cachedTripAt = 0L;
++        }
+       }
+       recentDetail = null;
+       recentOcrOffer = null;

@@ -1,0 +1,107 @@
+--- a/app/build.gradle
++++ b/app/build.gradle
+@@ -10,8 +10,8 @@
+         applicationId 'com.cocotaxi.app'
+         minSdk 26
+         targetSdk 36
+-        versionCode 30
+-        versionName '2.6.6'
++        versionCode 31
++        versionName '2.6.7'
+     }
+ 
+     compileOptions {
+--- a/app/src/main/java/com/cocotaxi/app/MainActivity.java
++++ b/app/src/main/java/com/cocotaxi/app/MainActivity.java
+@@ -707,19 +707,21 @@
+     LinearLayout main = card(body, "OBJETIVO ACTUAL", LineIconView.CHART);
+     LinearLayout r = row();
+     LinearLayout left = col();
+-    // Forward-looking target: remaining money divided by remaining jornada time. The previous
+-    // accumulated earnings/hour figure is deliberately removed because it is not an objective.
++    // "Objetivo actual" is the real accumulated hourly average for this session.
++    // Below the configured objective it is red; meeting or exceeding it turns it green.
+     double appMoney = s.money;
+-    double currentGoal =
+-        PromotionMath.requiredHourly(v.dailyGoal, v.targetHoursDay, s.minutes, appMoney);
+-    TextView avg = bold(Money.format(currentGoal) + "/h", compactUi ? 34 : 42, GREEN);
++    double currentHourly = s.hourly();
++    int currentHourlyColor =
++        s.minutes <= 0 ? WHITE : (currentHourly >= v.realGoalHour ? GREEN : RED);
++    TextView avg =
++        bold(Money.format(currentHourly) + "/h", compactUi ? 34 : 42, currentHourlyColor);
+     avg.setMaxLines(1);
+     avg.setAutoSizeTextTypeUniformWithConfiguration(compactUi ? 20 : 24, compactUi ? 34 : 42, 1, 2);
+     left.addView(avg, new LinearLayout.LayoutParams(-1, dp(compactUi ? 49 : 63)));
+     TextView tag = text("", compactUi ? 10.5f : 12, WHITE);
+     left.addView(tag);
+     r.addView(left, new LinearLayout.LayoutParams(0, -2, 2));
+-    GaugeView gauge = new GaugeView(this, currentGoal / v.realGoalHour);
++    GaugeView gauge = new GaugeView(this, currentHourly / v.realGoalHour);
+     r.addView(gauge, new LinearLayout.LayoutParams(0, dp(compactUi ? 62 : 80), 1.2f));
+     main.addView(r);
+     LinearLayout figures = row();
+@@ -731,8 +733,6 @@
+         Money.format(Math.max(0, v.realGoalHour * s.minutes / 60 - appMoney)),
+         RED);
+     main.addView(figures);
+-    TextView pending = text("", compactUi ? 10.5f : 12, MUTED);
+-    main.addView(pending);
+     LinearLayout session = card(body, "Tu sesión", LineIconView.CLOCK);
+     LinearLayout stats = row();
+     metric(stats, "Viajes", String.valueOf(s.trips), WHITE);
+@@ -757,25 +757,18 @@
+         () -> {
+           CocoStore.Session live = dashboardSession();
+           double liveAppMoney = live.money;
+-          double liveCurrentGoal =
+-              PromotionMath.requiredHourly(
+-                  v.dailyGoal, v.targetHoursDay, live.minutes, liveAppMoney);
+-          avg.setText(Money.format(liveCurrentGoal) + "/h");
+-          gauge.setFraction(liveCurrentGoal / v.realGoalHour);
++          double liveCurrentHourly = live.hourly();
++          avg.setText(Money.format(liveCurrentHourly) + "/h");
++          avg.setTextColor(
++              live.minutes <= 0 ? WHITE : (liveCurrentHourly >= v.realGoalHour ? GREEN : RED));
++          gauge.setFraction(liveCurrentHourly / v.realGoalHour);
+           tag.setText(
+               live.minutes == 0
+                   ? "OBJETIVO AL INICIAR"
+-                  : liveCurrentGoal <= v.realGoalHour
++                  : liveCurrentHourly >= v.realGoalHour
+                       ? "RITMO CUBIERTO"
+                       : "NECESITAS RECUPERAR RITMO");
+-          tag.setTextColor(liveCurrentGoal <= v.realGoalHour ? GREEN : RED);
+-          pending.setText(
+-              live.pending > 0
+-                  ? Money.exact(live.estimated)
+-                      + " estimado en viaje activo · "
+-                      + Money.exact(live.earned)
+-                      + " ganado"
+-                  : Money.exact(live.earned) + " ganado · sin viaje estimado activo");
++          tag.setTextColor(liveCurrentHourly >= v.realGoalHour ? GREEN : RED);
+           updateMetrics(
+               sr, new String[] {duration(live.minutes), Money.format(v.realGoalHour) + "/h"});
+           updateMetrics(
+--- a/app/src/main/java/com/cocotaxi/app/GaugeView.java
++++ b/app/src/main/java/com/cocotaxi/app/GaugeView.java
+@@ -38,15 +38,17 @@
+     paint.setStrokeWidth(stroke);
+     paint.setColor(Color.rgb(23, 54, 80));
+     canvas.drawArc(arc, 135f, 270f, false, paint);
++    int progressColor =
++        fraction >= 0.999 ? Color.rgb(32, 227, 162) : Color.rgb(255, 95, 109);
+     if (fraction > 0.001) {
+-      paint.setColor(Color.rgb(32, 227, 162));
++      paint.setColor(progressColor);
+       canvas.drawArc(arc, 135f, (float) (270.0 * fraction), false, paint);
+     }
+ 
+     paint.setStyle(Paint.Style.FILL);
+     paint.setTextAlign(Paint.Align.CENTER);
+     paint.setTypeface(Typeface.DEFAULT_BOLD);
+-    paint.setColor(Color.rgb(32, 227, 162));
++    paint.setColor(progressColor);
+     paint.setTextSize(s * 0.23f);
+     canvas.drawText(Math.round(fraction * 100.0) + "%", w / 2f, h * 0.5f, paint);
+ 

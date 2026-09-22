@@ -1,0 +1,183 @@
+--- a/CAMBIOS_2.8.5.md
++++ b/CAMBIOS_2.8.5.md
+@@ -0,0 +1,9 @@
++# COCOTAXI 2.8.5 — detección robusta de fin de viaje
++
++- Corrige el caso en que Cabify finaliza el viaje pero Coco deja el contador En servicio corriendo.
++- Reconoce la pantalla final por semántica Compose `JOURNEY_FINISHED_*` y por IDs clásicos de Cabify como `rootFinishState` y `toolbarFinishedState`.
++- Reconoce el resumen final aunque Cabify no exponga el título, usando combinaciones específicas como `Para ti + Ver detalles + Entendido` y el aviso de ganancia final.
++- Añade un respaldo conservador: si Coco acaba de ver el viaje activo y Cabify vuelve establemente a su mapa realmente inactivo, finaliza el viaje aunque no haya recibido el evento del deslizador.
++- El respaldo no usa zonas amarillas/rojas ni una oferta nueva como prueba suficiente, para evitar cerrar un viaje por error.
++- Mantiene pausa, cancelaciones, promociones, zonas sin GPS, licencia y paquete independiente.
++- `versionName 2.8.5` / `versionCode 41`.
+--- a/app/build.gradle
++++ b/app/build.gradle
+@@ -10,8 +10,8 @@
+         applicationId 'com.cocotaxi.independent'
+         minSdk 26
+         targetSdk 36
+-        versionCode 40
+-        versionName '2.8.4'
++        versionCode 41
++        versionName '2.8.5'
+     }
+
+     compileOptions {
+--- a/app/src/main/java/com/cocotaxi/app/AssignmentSignals.java
++++ b/app/src/main/java/com/cocotaxi/app/AssignmentSignals.java
+@@ -104,17 +104,40 @@
+         || value.contains("completed_journey")
+         || value.contains("journey_summary")
+         || value.contains("rate_journey")
+-        || value.contains("rating_screen");
++        || value.contains("rating_screen")
++        // Legacy/view-binding finish screen ids found in the current Cabify Driver build.
++        || value.contains("rootfinishstate")
++        || value.contains("toolbarfinishedstate")
++        || value.contains("finishbuttoncontainer");
+   }
+
+   public static boolean isCompletedNormalized(String text) {
+     if (text == null || OfferParser.isHistoryNormalized(text)) return false;
+-    return text.contains("viaje finalizado")
+-        || text.contains("viaje terminado")
+-        || text.contains("viaje completado")
+-        || text.contains("califica el viaje")
+-        || text.contains("calificar viaje")
+-        || text.contains("resumen del viaje");
++    boolean explicit =
++        text.contains("viaje finalizado")
++            || text.contains("viaje terminado")
++            || text.contains("viaje completado")
++            || text.contains("califica el viaje")
++            || text.contains("calificar viaje")
++            || text.contains("resumen del viaje");
++    if (explicit) return true;
++
++    // Cabify's current finished summary does not always expose the title to Accessibility/OCR.
++    // These combinations come from its finished-state resources and are specific enough to avoid
++    // treating an ordinary dialog containing only "Entendido" as a completed ride.
++    return text.contains("viajes finalizados hoy")
++        || text.contains("estamos calculando tu ganancia final")
++        || (text.contains("para ti") && text.contains("ver detalles") && text.contains("entendido"))
++        || (text.contains("pago en la app") && text.contains("ver detalles") && text.contains("entendido"))
++        || (text.contains("pago en efectivo") && text.contains("ver detalles") && text.contains("entendido"));
++  }
++
++  /** Strong idle-map evidence; unlike generic demand text this should not be present mid-journey. */
++  public static boolean isIdleMainMapNormalized(String text) {
++    if (text == null || text.isEmpty()) return false;
++    return text.contains("buscar viajes")
++        || text.contains("estas conectado")
++        || text.contains("estas en linea");
+   }
+
+   /** Main-map evidence used only after the driver explicitly requested Finish. */
+--- a/app/src/main/java/com/cocotaxi/app/CocotaxiAccessibilityService.java
++++ b/app/src/main/java/com/cocotaxi/app/CocotaxiAccessibilityService.java
+@@ -39,6 +39,10 @@
+   private long assignmentWithoutOfferAt;
+   private long finishRequestedAt, finishMapSeenAt;
+   private String finishTripId = "";
++  // Last unmistakable active-journey evidence. Used only as a conservative fallback when Cabify
++  // returns directly to its idle map without exposing the Finish click or a readable summary.
++  private long lastJourneyEvidenceAt, passiveFinishMapSeenAt;
++  private String passiveFinishTripId = "";
+   private long cancelRequestedAt, cancelConfirmedAt, cancelMapSeenAt;
+   private String cancelTripId = "";
+
+@@ -147,6 +151,8 @@
+     if (trip == null || !"ASIGNADO".equals(trip.status)) {
+       finishRequestedAt = finishMapSeenAt = 0L;
+       finishTripId = "";
++      lastJourneyEvidenceAt = passiveFinishMapSeenAt = 0L;
++      passiveFinishTripId = "";
+       return false;
+     }
+
+@@ -154,12 +160,37 @@
+       return completeObservedTrip(store, trip, "Viaje finalizado · servicio detenido");
+
+     long now = SystemClock.elapsedRealtime();
++    boolean journeyEvidence = assigned || tree.journeySemantic;
++    if (journeyEvidence) {
++      lastJourneyEvidenceAt = now;
++      passiveFinishTripId = trip.id;
++      passiveFinishMapSeenAt = 0L;
++    }
++
+     if (tree.finishConfirmSemantic && finishRequestedAt <= 0) {
+       finishRequestedAt = now;
+       finishTripId = trip.id;
+       diagnostic = "Confirma la finalización en Cabify · el reloj sigue activo";
+     }
+-    if (finishRequestedAt <= 0 || !trip.id.equals(finishTripId)) return false;
++    if (finishRequestedAt <= 0 || !trip.id.equals(finishTripId)) {
++      // Some Cabify builds complete the slider immediately and return straight to the idle map.
++      // If Coco saw an active journey moments ago, require a stable, strong idle-map state before
++      // closing it. Generic red/yellow demand text and offer cards are deliberately not enough.
++      boolean idleMap = AssignmentSignals.isIdleMainMapNormalized(normalized);
++      boolean recentSameJourney =
++          lastJourneyEvidenceAt > 0L
++              && trip.id.equals(passiveFinishTripId)
++              && now - lastJourneyEvidenceAt <= 8000L;
++      if (!journeyEvidence && idleMap && recentSameJourney) {
++        if (passiveFinishMapSeenAt == 0L) passiveFinishMapSeenAt = now;
++        if (now - passiveFinishMapSeenAt >= 1500L)
++          return completeObservedTrip(
++              store, trip, "Fin de viaje confirmado al volver al mapa · servicio detenido");
++      } else {
++        passiveFinishMapSeenAt = 0L;
++      }
++      return false;
++    }
+     if (now - finishRequestedAt > 45000L) {
+       finishRequestedAt = finishMapSeenAt = 0L;
+       finishTripId = "";
+
+@@ -198,6 +229,8 @@
+     }
+     finishRequestedAt = finishMapSeenAt = 0L;
+     finishTripId = "";
++    lastJourneyEvidenceAt = passiveFinishMapSeenAt = 0L;
++    passiveFinishTripId = "";
+     return completed;
+   }
+
+@@ -251,6 +284,8 @@
+       assignmentWithoutOfferAt = 0L;
+       finishRequestedAt = finishMapSeenAt = 0L;
+       finishTripId = "";
++      lastJourneyEvidenceAt = passiveFinishMapSeenAt = 0L;
++      passiveFinishTripId = "";
+       CocotaxiOverlayService.clearOffer();
+     }
+     resetCancellationState();
+--- a/app/src/test/java/com/cocotaxi/app/Strategy271Test.java
++++ b/app/src/test/java/com/cocotaxi/app/Strategy271Test.java
+@@ -212,4 +212,25 @@
+     assertTrue(AssignmentSignals.isCancelledNormalized("has cancelado el viaje"));
+     assertTrue(AssignmentSignals.isCancellationSemantic("jf_journey_cancelled_screen"));
+   }
++  @Test
++  public void cabifyFinishedSummaryAndLegacyIdsAreTerminal() {
++    assertTrue(AssignmentSignals.isCompletionSemantic("JOURNEY_FINISHED_SUMMARY_VIEW"));
++    assertTrue(AssignmentSignals.isCompletionSemantic("com.cabify.driver:id/rootFinishState"));
++    assertTrue(AssignmentSignals.isCompletionSemantic("com.cabify.driver:id/toolbarFinishedState"));
++    assertTrue(
++        AssignmentSignals.isCompletedNormalized(
++            OfferParser.normalize("Para ti $320 · Ver detalles · Entendido")));
++    assertTrue(
++        AssignmentSignals.isCompletedNormalized(
++            OfferParser.normalize("Estamos calculando tu ganancia final. Entendido")));
++    assertFalse(AssignmentSignals.isCompletedNormalized(OfferParser.normalize("Entendido")));
++  }
++
++  @Test
++  public void idleMapSignalIsStrongAndDoesNotUseDemandAlone() {
++    assertTrue(AssignmentSignals.isIdleMainMapNormalized(OfferParser.normalize("Estás conectado")));
++    assertTrue(AssignmentSignals.isIdleMainMapNormalized(OfferParser.normalize("Buscar viajes")));
++    assertFalse(AssignmentSignals.isIdleMainMapNormalized(OfferParser.normalize("Demanda alta +50%")));
++  }
++
+ }

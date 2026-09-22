@@ -1,0 +1,46 @@
+--- a/app/build.gradle
++++ b/app/build.gradle
+@@ -10,8 +10,8 @@
+         applicationId 'com.cocotaxi.app'
+         minSdk 26
+         targetSdk 36
+-        versionCode 31
+-        versionName '2.6.7'
++        versionCode 32
++        versionName '2.6.8'
+     }
+ 
+     compileOptions {
+--- a/app/src/main/java/com/cocotaxi/app/MainActivity.java
++++ b/app/src/main/java/com/cocotaxi/app/MainActivity.java
+@@ -788,7 +788,7 @@
+           double needed = PromotionMath.requiredHourly(v.dailyGoal, v.targetHoursDay, live.minutes, live.money);
+           pace.setText(live.minutes >= v.targetHoursDay*60
+               ? "Tiempo previsto agotado · faltan " + Money.format(Math.max(0,v.dailyGoal-live.money))
+-              : "Para tu meta diaria: " + Money.format(needed) + "/h desde ahora");
++              : "");
+           promoButton.setText(PromotionStore.get(this).description() + "  ›");
+         });
+   }
+--- a/app/src/main/res/drawable/app_launch_background.xml
++++ b/app/src/main/res/drawable/app_launch_background.xml
+@@ -1,6 +1,6 @@
+ <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+     <item android:drawable="@color/splash_background" />
+-    <item android:width="96dp" android:height="96dp" android:gravity="center">
+-        <bitmap android:gravity="fill" android:src="@drawable/cocotaxi_icon" />
++    <item android:width="180dp" android:height="180dp" android:gravity="center">
++        <bitmap android:gravity="fill" android:src="@drawable/cocotaxi_foreground" />
+     </item>
+ </layer-list>
+--- a/app/src/main/res/values-v31/styles.xml
++++ b/app/src/main/res/values-v31/styles.xml
+@@ -8,7 +8,7 @@
+         <item name="android:alertDialogTheme">@style/CocoDialog</item>
+         <item name="android:windowBackground">@drawable/app_launch_background</item>
+         <item name="android:windowSplashScreenBackground">@color/splash_background</item>
+-        <item name="android:windowSplashScreenAnimatedIcon">@drawable/cocotaxi_icon</item>
++        <item name="android:windowSplashScreenAnimatedIcon">@drawable/cocotaxi_foreground</item>
+         <item name="android:windowSplashScreenIconBackgroundColor">@color/splash_background</item>
+     </style>
+ </resources>

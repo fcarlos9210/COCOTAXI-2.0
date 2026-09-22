@@ -1,0 +1,463 @@
+--- a/app/src/main/java/com/cocotaxi/app/MainActivity.java
++++ b/app/src/main/java/com/cocotaxi/app/MainActivity.java
+@@ -493,16 +493,11 @@
+       createPinDialog();
+       return;
+     }
+-    new AlertDialog.Builder(this)
+-        .setTitle("PIN de inicio")
+-        .setItems(
+-            new String[] {"Cambiar PIN", "Desactivar PIN"},
+-            (d, which) -> {
+-              if (which == 0) changePinDialog();
+-              else disablePinDialog();
+-            })
+-        .setNegativeButton("Cancelar", null)
+-        .show();
++    actionButtonsDialog(
++        "PIN de inicio",
++        java.util.Arrays.asList("Cambiar PIN", "Desactivar PIN"),
++        java.util.Arrays.asList(this::changePinDialog, this::disablePinDialog),
++        "Cancelar");
+   }
+ 
+   private void createPinDialog() {
+@@ -712,19 +707,19 @@
+     LinearLayout main = card(body, "OBJETIVO ACTUAL", LineIconView.CHART);
+     LinearLayout r = row();
+     LinearLayout left = col();
+-    // The live figure must include every trip that Cabify has actually assigned, even while its
+-    // payout is still estimated. CocoStore.money already excludes mere attempts and failed offers.
+-    // This restores the 2.4.5 ledger semantics while keeping the 2.6.0 fast capture path.
++    // Forward-looking target: remaining money divided by remaining jornada time. The previous
++    // accumulated earnings/hour figure is deliberately removed because it is not an objective.
+     double appMoney = s.money;
+-    double realHourly = s.minutes > 0 ? appMoney * 60 / s.minutes : 0;
+-    TextView avg = bold(Money.format(realHourly) + "/h", compactUi ? 34 : 42, GREEN);
++    double currentGoal =
++        PromotionMath.requiredHourly(v.dailyGoal, v.targetHoursDay, s.minutes, appMoney);
++    TextView avg = bold(Money.format(currentGoal) + "/h", compactUi ? 34 : 42, GREEN);
+     avg.setMaxLines(1);
+     avg.setAutoSizeTextTypeUniformWithConfiguration(compactUi ? 20 : 24, compactUi ? 34 : 42, 1, 2);
+     left.addView(avg, new LinearLayout.LayoutParams(-1, dp(compactUi ? 49 : 63)));
+     TextView tag = text("", compactUi ? 10.5f : 12, WHITE);
+     left.addView(tag);
+     r.addView(left, new LinearLayout.LayoutParams(0, -2, 2));
+-    GaugeView gauge = new GaugeView(this, realHourly / v.realGoalHour);
++    GaugeView gauge = new GaugeView(this, currentGoal / v.realGoalHour);
+     r.addView(gauge, new LinearLayout.LayoutParams(0, dp(compactUi ? 62 : 80), 1.2f));
+     main.addView(r);
+     LinearLayout figures = row();
+@@ -762,14 +757,18 @@
+         () -> {
+           CocoStore.Session live = dashboardSession();
+           double liveAppMoney = live.money;
+-          double liveRealHourly = live.minutes > 0 ? liveAppMoney * 60 / live.minutes : 0;
+-          avg.setText(Money.format(liveRealHourly) + "/h");
+-          gauge.setFraction(liveRealHourly / v.realGoalHour);
++          double liveCurrentGoal =
++              PromotionMath.requiredHourly(
++                  v.dailyGoal, v.targetHoursDay, live.minutes, liveAppMoney);
++          avg.setText(Money.format(liveCurrentGoal) + "/h");
++          gauge.setFraction(liveCurrentGoal / v.realGoalHour);
+           tag.setText(
+               live.minutes == 0
+-                  ? "INICIA PARA MEDIR"
+-                  : liveRealHourly >= v.realGoalHour ? "EN OBJETIVO" : "POR DEBAJO DEL OBJETIVO");
+-          tag.setTextColor(liveRealHourly >= v.realGoalHour ? GREEN : RED);
++                  ? "OBJETIVO AL INICIAR"
++                  : liveCurrentGoal <= v.realGoalHour
++                      ? "RITMO CUBIERTO"
++                      : "NECESITAS RECUPERAR RITMO");
++          tag.setTextColor(liveCurrentGoal <= v.realGoalHour ? GREEN : RED);
+           pending.setText(
+               live.pending > 0
+                   ? Money.exact(live.estimated)
+@@ -856,19 +855,22 @@
+             "Elegir sesión",
+             () -> {
+               List<CocoStore.Session> ss = store.sessions();
+-              String[] names = new String[ss.size()];
+-              for (int n = 0; n < ss.size(); n++)
+-                names[n] = stamp(ss.get(n).start) + " · " + Money.exact(ss.get(n).money);
+-              new AlertDialog.Builder(this)
+-                  .setTitle("Sesiones")
+-                  .setItems(
+-                      names,
+-                      (d, w) -> {
+-                        selectedSession = ss.get(w).id;
+-                        historyPage = 0;
+-                        render();
+-                      })
+-                  .show();
++              List<String> names = new ArrayList<>();
++              List<Runnable> actions = new ArrayList<>();
++              for (CocoStore.Session item : ss) {
++                names.add(stamp(item.start) + " · " + Money.exact(item.money));
++                actions.add(
++                    () -> {
++                      selectedSession = item.id;
++                      historyPage = 0;
++                      render();
++                    });
++              }
++              if (names.isEmpty()) {
++                toast("Todavía no hay sesiones");
++                return;
++              }
++              actionButtonsDialog("Sesiones", names, actions, "Cancelar");
+             }),
+         new LinearLayout.LayoutParams(0, -2, .8f));
+     gapHorizontal(topActions, 6);
+@@ -927,10 +929,11 @@
+     List<String> actions = new ArrayList<>();
+     List<Runnable> run = new ArrayList<>();
+     if (!t.deleted) {
+-      if ("ASIGNADO".equals(t.status) || "FINALIZADO".equals(t.status)) {
++      boolean manualEntry = t.offered <= 0 && t.accepted <= 0;
++      if (!manualEntry && ("ASIGNADO".equals(t.status) || "FINALIZADO".equals(t.status))) {
+         actions.add("Quitar confirmación del viaje");
+         run.add(() -> { store.unconfirm(t.id); render(); });
+-      } else if ("SIN CONFIRMAR".equals(t.status)) {
++      } else if (!manualEntry && "SIN CONFIRMAR".equals(t.status)) {
+         actions.add("Confirmar viaje nuevamente");
+         run.add(() -> { store.reconfirm(t.id); render(); });
+       }
+@@ -942,11 +945,7 @@
+       actions.add("Deshacer eliminación");
+       run.add(() -> { store.restore(t.id); render(); });
+     }
+-    new AlertDialog.Builder(this)
+-        .setTitle("Gestionar viaje")
+-        .setItems(actions.toArray(new String[0]), (d, which) -> run.get(which).run())
+-        .setNegativeButton("Cerrar", null)
+-        .show();
++    actionButtonsDialog("Gestionar viaje", actions, run, "Cerrar");
+   }
+ 
+   private LinearLayout form() {
+@@ -1005,7 +1004,49 @@
+     return d;
+   }
+ 
++  private AlertDialog actionButtonsDialog(
++      String title, List<String> labels, List<Runnable> actions, String closeLabel) {
++    LinearLayout c = form();
++    AlertDialog[] holder = new AlertDialog[1];
++    for (int i = 0; i < labels.size(); i++) {
++      final int index = i;
++      TextView option =
++          button(
++              labels.get(i),
++              () -> {
++                if (holder[0] != null) holder[0].dismiss();
++                actions.get(index).run();
++              });
++      c.addView(option, new LinearLayout.LayoutParams(-1, -2));
++      if (i < labels.size() - 1) gap(c, 6);
++    }
++    if (closeLabel != null && !closeLabel.isEmpty()) {
++      gap(c, 8);
++      c.addView(
++          button(
++              closeLabel,
++              () -> {
++                if (holder[0] != null) holder[0].dismiss();
++              }),
++          new LinearLayout.LayoutParams(-1, -2));
++    }
++    ScrollView scroll = new ScrollView(this);
++    scroll.addView(c);
++    AlertDialog d = new AlertDialog.Builder(this).setTitle(title).setView(scroll).create();
++    holder[0] = d;
++    d.show();
++    return d;
++  }
++
+   private void manualIncome() {
++    CocoStore store = CocoStore.get(this);
++    CocoStore.Session latest = store.session();
++    String targetSession = selectedSession.isEmpty() ? latest.id : selectedSession;
++    if (targetSession == null || targetSession.isEmpty()) {
++      toast("Primero inicia una sesión o elige una sesión anterior");
++      return;
++    }
++
+     LinearLayout c = form();
+     EditText amount = field(c, "Cobro real sin propina ni peajes (UYU)", ""),
+         minutes = field(c, "Minutos de recogida y servicio", "0");
+@@ -1016,22 +1057,23 @@
+     c.addView(trip);
+     c.addView(
+         text(
+-            "El viaje manual se registra ya finalizado: suma el cobro y sus minutos a En servicio"
+-                + " de inmediato, sin iniciar un contador. Puedes registrarlo con la sesión en"
+-                + " marcha. Para modificarlo después, usa Corregir.",
++            "El viaje manual queda finalizado de inmediato. Sus minutos se suman de golpe a"
++                + " En servicio y también al tiempo Conectado de esta sesión; nunca inicia un"
++                + " contador vivo. Puedes registrarlo con la sesión activa, pausada o ya cerrada.",
+             12,
+             MUTED));
++    final String sessionId = targetSession;
+     dialog(
+         "Registrar ingreso",
+         c,
+         "Guardar",
+         () ->
+-            CocoStore.get(this)
+-                .manual(
+-                    number(amount),
+-                    number(minutes),
+-                    trip.isChecked() ? "Viaje manual" : "Extra cobrado",
+-                    trip.isChecked()));
++            store.manualForSession(
++                sessionId,
++                number(amount),
++                number(minutes),
++                trip.isChecked() ? "Viaje manual" : "Extra cobrado",
++                trip.isChecked()));
+   }
+ 
+   private void correct(CocoStore.Trip t) {
+@@ -1048,19 +1090,13 @@
+                 "Pago ordinario sin bonos, propina ni peajes",
+                 decimal(t.ordinary > 0 ? t.ordinary : t.confirmed ? t.actual : t.estimate));
+     EditText manualMinutes = manualEntry ? field(c, "Minutos de recogida y servicio", decimal(t.minutes)) : null;
+-    Switch pair = new Switch(this);
+-    pair.setText("Oferta y pago verificados del mismo viaje");
+-    pair.setTextColor(WHITE);
+-    pair.setChecked(t.pair);
+-    pair.setEnabled(t.offered > 0);
+-    c.addView(pair);
+     c.addView(
+         text(
+             manualEntry
+-                ? "Al guardar, el viaje manual sigue finalizado. Los minutos cambian En servicio"
+-                    + " de golpe y nunca ponen en marcha un contador en vivo."
+-                : "Confirmar marca el viaje como finalizado. El factor aprende solo de parejas"
+-                    + " verificadas; no incluye ingresos manuales sin oferta.",
++                ? "Al guardar, el viaje manual sigue finalizado. La diferencia de minutos se suma"
++                    + " o resta también del tiempo Conectado; nunca pone en marcha un contador vivo."
++                : "Confirmar marca el viaje como finalizado. Si Coco capturó la oferta original,"
++                    + " la comparación con el pago se valida automáticamente.",
+             12,
+             MUTED));
+     dialog(
+@@ -1074,12 +1110,12 @@
+                     t.id,
+                     number(amount),
+                     number(cost),
+-                    pair.isChecked(),
++                    false,
+                     number(ordinary),
+                     number(manualMinutes));
+           else
+             CocoStore.get(this)
+-                .correct(t.id, number(amount), number(cost), pair.isChecked(), number(ordinary));
++                .correct(t.id, number(amount), number(cost), t.offered > 0, number(ordinary));
+         });
+   }
+ 
+@@ -1321,26 +1357,41 @@
+ 
+   private void profile() {
+     SettingsStore.Values liveSettings = SettingsStore.load(this);
+-    LinearLayout security = card(body, "SEGURIDAD", LineIconView.LOCK);
++    LicenseManager.Snapshot license =
++        licenseManager == null ? LicenseManager.get(this).snapshot() : licenseManager.snapshot();
++
++    LinearLayout profile = card(body, "PERFIL", LineIconView.PROFILE);
++
+     LinearLayout pinRow = row();
+     LineIconView pinIcon = new LineIconView(this, LineIconView.PIN);
+     pinIcon.setIconColor(PinStore.enabled(this) ? GREEN : MUTED);
+-    pinRow.addView(pinIcon, new LinearLayout.LayoutParams(dp(compactUi ? 24 : 28), dp(compactUi ? 24 : 28)));
++    pinRow.addView(
++        pinIcon,
++        new LinearLayout.LayoutParams(
++            dp(compactUi ? 24 : 28), dp(compactUi ? 24 : 28)));
+     LinearLayout pinText = col();
+     pinText.setPadding(dp(9), 0, dp(8), 0);
+     pinText.addView(bold("PIN de inicio", compactUi ? 11.5f : 13, WHITE));
+-    pinText.addView(text(PinStore.enabled(this) ? "Activado · se pedirá al abrir Coco" : "Desactivado", compactUi ? 9.5f : 10.5f, MUTED));
++    pinText.addView(
++        text(
++            PinStore.enabled(this)
++                ? "Activado · se pedirá al abrir Coco"
++                : "Desactivado",
++            compactUi ? 9.5f : 10.5f,
++            MUTED));
+     pinRow.addView(pinText, new LinearLayout.LayoutParams(0, -2, 1));
+-    TextView pinAction = button(PinStore.enabled(this) ? "Cambiar" : "Configurar", this::configurePin);
++    TextView pinAction =
++        button(PinStore.enabled(this) ? "Cambiar" : "Configurar", this::configurePin);
+     pinAction.setTextSize(compactUi ? 10.8f : 12.0f);
+     pinAction.setMinHeight(dp(compactUi ? 42 : 46));
+-    pinAction.setPadding(dp(8), dp(compactUi ? 6 : 8), dp(8), dp(compactUi ? 6 : 8));
+-    pinRow.addView(pinAction,
+-        new LinearLayout.LayoutParams(dp(compactUi ? 112 : 126), -2));
+-    security.addView(pinRow);
++    pinAction.setPadding(
++        dp(8), dp(compactUi ? 6 : 8), dp(8), dp(compactUi ? 6 : 8));
++    pinRow.addView(
++        pinAction, new LinearLayout.LayoutParams(dp(compactUi ? 112 : 126), -2));
++    profile.addView(pinRow);
+ 
+-    LinearLayout preferences = card(body, "PERFIL", LineIconView.GEAR);
+-    preferences.addView(
++    gap(profile, 7);
++    profile.addView(
+         settingsToggleTile(
+             LineIconView.ROAD,
+             "Vibración",
+@@ -1352,36 +1403,129 @@
+             }),
+         new LinearLayout.LayoutParams(-1, dp(compactUi ? 49 : 56)));
+ 
+-    LinearLayout access = card(body, "APLICACIÓN", LineIconView.GEAR);
+-    LicenseManager.Snapshot license = licenseManager == null
+-        ? LicenseManager.get(this).snapshot()
+-        : licenseManager.snapshot();
+-    access.addView(bold("Licencia", compactUi ? 11.5f : 13, WHITE));
+-    access.addView(text(licenseLabel(license), compactUi ? 10 : 11.5f,
+-        license.allowsUse() ? GREEN : (license.checking ? YELLOW : MUTED)));
++    gap(profile, 7);
++    LinearLayout licenseRow = row();
++    LinearLayout licenseText = col();
++    licenseText.addView(bold("Activación", compactUi ? 11.5f : 13, WHITE));
++    licenseText.addView(
++        text(
++            licenseLabel(license),
++            compactUi ? 10 : 11.5f,
++            license.allowsUse() ? GREEN : (license.checking ? YELLOW : MUTED)));
+     if (!license.displayCode.isEmpty())
+-      access.addView(text("Código: " + license.displayCode, compactUi ? 9.5f : 10.5f, MUTED));
+-    LinearLayout licenseActions = row();
+-    licenseActions.addView(
+-        button("Activar / comprobar", () -> refreshLicense(true)),
+-        new LinearLayout.LayoutParams(0, -2, 1.25f));
+-    gapHorizontal(licenseActions, 6);
+-    licenseActions.addView(
+-        button("WhatsApp", this::openLicenseWhatsApp),
+-        new LinearLayout.LayoutParams(0, -2, .75f));
+-    access.addView(licenseActions);
+-    gap(access, 6);
+-    access.addView(
++      licenseText.addView(
++          text("Código: " + license.displayCode, compactUi ? 9.5f : 10.5f, MUTED));
++    licenseRow.addView(licenseText, new LinearLayout.LayoutParams(0, -2, 1));
++    TextView activate = button("Activar", this::showActivationDialog);
++    activate.setMinHeight(dp(compactUi ? 42 : 46));
++    licenseRow.addView(
++        activate, new LinearLayout.LayoutParams(dp(compactUi ? 100 : 116), -2));
++    profile.addView(licenseRow);
++
++    gap(profile, 7);
++    profile.addView(
+         button(
+             "Permisos",
+             () -> {
+               permissionDeferred = false;
+               checkPermissions();
+             }));
++
+     TextView author = text("Creado por Frank Carlos", compactUi ? 10.5f : 12, MUTED);
+     author.setGravity(Gravity.CENTER);
+-    author.setPadding(0, dp(compactUi ? 6 : 10), 0, dp(compactUi ? 4 : 8));
+-    body.addView(author);
++    author.setPadding(0, dp(compactUi ? 8 : 12), 0, dp(compactUi ? 2 : 4));
++    profile.addView(author);
++  }
++
++  private void showActivationDialog() {
++    if (licenseManager == null) licenseManager = LicenseManager.get(this);
++    LicenseManager.Snapshot snapshot = licenseManager.snapshot();
++
++    LinearLayout c = col();
++    c.setPadding(dp(20), dp(18), dp(20), dp(12));
++
++    String title =
++        snapshot.state == LicenseState.PERMANENT_ACTIVE
++            ? "Activación permanente"
++            : "Activación de COCOTAXI";
++    TextView heading = bold(title, compactUi ? 19 : 22, WHITE);
++    heading.setGravity(Gravity.CENTER);
++    c.addView(heading);
++    gap(c, 12);
++
++    String statusText;
++    if (snapshot.state == LicenseState.PERMANENT_ACTIVE)
++      statusText = "COCOTAXI está activado permanentemente en este dispositivo.";
++    else if (snapshot.state == LicenseState.TRIAL_ACTIVE)
++      statusText = "COCOTAXI tiene una prueba activa en este dispositivo.";
++    else if (snapshot.state == LicenseState.BLOCKED)
++      statusText = "La activación de este dispositivo está bloqueada.";
++    else if (snapshot.state == LicenseState.TRIAL_EXPIRED)
++      statusText = "La prueba terminó. Contacta para activar COCOTAXI.";
++    else statusText = licenseLabel(snapshot);
++    TextView status =
++        text(
++            statusText,
++            compactUi ? 11.5f : 13,
++            snapshot.allowsUse() ? GREEN : (snapshot.checking ? YELLOW : MUTED));
++    status.setGravity(Gravity.CENTER);
++    c.addView(status);
++
++    gap(c, 13);
++    TextView codeLabel = text("Código del dispositivo", compactUi ? 10.5f : 12, MUTED);
++    codeLabel.setGravity(Gravity.CENTER);
++    c.addView(codeLabel);
++    String code = snapshot.displayCode;
++    if (code == null || code.isEmpty()) {
++      try {
++        code = DeviceIdentity.displayCode(DeviceIdentity.hash(this));
++      } catch (RuntimeException ignored) {
++        code = "SIN CÓDIGO";
++      }
++    }
++    TextView codeView = bold(code, compactUi ? 19 : 22, YELLOW);
++    codeView.setGravity(Gravity.CENTER);
++    c.addView(codeView);
++    TextView note =
++        text(
++            "Este código identifica la activación de este dispositivo.",
++            compactUi ? 10.5f : 11.5f,
++            MUTED);
++    note.setGravity(Gravity.CENTER);
++    c.addView(note);
++
++    gap(c, 12);
++    AlertDialog[] holder = new AlertDialog[1];
++    c.addView(
++        primaryButton("CONTACTAR POR WHATSAPP", this::openLicenseWhatsApp),
++        new LinearLayout.LayoutParams(-1, -2));
++    gap(c, 7);
++    c.addView(
++        button(
++            "COMPROBAR ACTIVACIÓN",
++            () -> {
++              if (holder[0] != null) holder[0].dismiss();
++              refreshLicense(true);
++            }),
++        new LinearLayout.LayoutParams(-1, -2));
++
++    gap(c, 7);
++    LinearLayout cancelRow = row();
++    cancelRow.setGravity(Gravity.RIGHT);
++    TextView cancel = bold("Cancelar", compactUi ? 11.5f : 12.5f, YELLOW);
++    cancel.setGravity(Gravity.RIGHT);
++    cancel.setPadding(dp(16), dp(8), dp(2), dp(6));
++    cancel.setOnClickListener(v -> {
++      if (holder[0] != null) holder[0].dismiss();
++    });
++    cancelRow.addView(cancel, new LinearLayout.LayoutParams(-2, -2));
++    c.addView(cancelRow);
++
++    ScrollView scroll = new ScrollView(this);
++    scroll.addView(c);
++    AlertDialog d = new AlertDialog.Builder(this).setView(scroll).create();
++    holder[0] = d;
++    d.show();
+   }
+ 
+   private void gapHorizontal(LinearLayout l, int width) {

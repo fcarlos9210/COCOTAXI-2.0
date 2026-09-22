@@ -1,0 +1,228 @@
+diff --git a/app/build.gradle b/app/build.gradle
+index 01e3a17..af6c64f 100644
+--- a/app/build.gradle
++++ b/app/build.gradle
+@@ -10,8 +10,8 @@ android {
+         applicationId 'com.cocotaxi.app'
+         minSdk 26
+         targetSdk 36
+-        versionCode 33
+-        versionName '2.6.9'
++        versionCode 34
++        versionName '2.7.0'
+     }
+ 
+     compileOptions {
+diff --git a/app/src/main/java/com/cocotaxi/app/CocoStore.java b/app/src/main/java/com/cocotaxi/app/CocoStore.java
+index 6c961ab..f0be8ea 100644
+--- a/app/src/main/java/com/cocotaxi/app/CocoStore.java
++++ b/app/src/main/java/com/cocotaxi/app/CocoStore.java
+@@ -26,7 +26,7 @@ public final class CocoStore extends SQLiteOpenHelper {
+   }
+ 
+   private CocoStore(Context c) {
+-    super(c, "cocotaxi_v3.db", null, 2);
++    super(c, "cocotaxi_v3.db", null, 3);
+     context = c.getApplicationContext();
+   }
+ 
+@@ -49,7 +49,7 @@ public final class CocoStore extends SQLiteOpenHelper {
+         "CREATE TABLE trips(id TEXT PRIMARY KEY,session TEXT,at INTEGER,status TEXT,offered"
+             + " REAL,kind TEXT,estimate INTEGER,actual INTEGER,cost INTEGER,ordinary REAL,pair"
+             + " INTEGER DEFAULT 0,minutes REAL,accepted INTEGER,key TEXT,label TEXT,deleted INTEGER"
+-            + " DEFAULT 0,trip INTEGER DEFAULT 1)");
++            + " DEFAULT 0,trip INTEGER DEFAULT 1,planned REAL DEFAULT 0,connected_adjusted INTEGER DEFAULT 0)");
+     d.execSQL("CREATE INDEX trips_session ON trips(session,at)");
+     d.execSQL("CREATE TABLE intervals(start INTEGER,end INTEGER,minutes REAL,session TEXT)");
+     d.execSQL(
+@@ -60,6 +60,15 @@ public final class CocoStore extends SQLiteOpenHelper {
+   @Override
+   public void onUpgrade(SQLiteDatabase d, int old, int next) {
+     if (old < 2) d.execSQL("ALTER TABLE billing ADD COLUMN eligible INTEGER DEFAULT 0");
++    if (old < 3) {
++      d.execSQL("ALTER TABLE trips ADD COLUMN planned REAL DEFAULT 0");
++      d.execSQL("ALTER TABLE trips ADD COLUMN connected_adjusted INTEGER DEFAULT 0");
++      // Through 2.6.9 every manual entry added its minutes to Connected. Preserve that fact so
++      // later edits/deletes can reverse the historical adjustment correctly.
++      d.execSQL(
++          "UPDATE trips SET connected_adjusted=1 WHERE offered<=0 AND accepted<=0"
++              + " AND status='FINALIZADO'");
++    }
+   }
+ 
+   private int boot() {
+@@ -143,10 +152,9 @@ public final class CocoStore extends SQLiteOpenHelper {
+     s.estimated = t.estimated;
+     s.earned = t.earned;
+     s.trips = t.trips;
+-    // Finalized rides already store their duration in minutes. While a ride is still assigned,
+-    // keep adding the live elapsed time from the instant Coco/user accepted it. This makes the
+-    // dashboard's "En servicio" and "Sin viaje" counters truly live instead of waiting until the
+-    // ride has finished.
++    // Finalized/manual rides store their service duration. While an automatically detected ride
++    // is assigned, En servicio grows live but never beyond the duration Coco captured from the
++    // offer. Connected keeps its own real clock, so Sin viaje is simply Connected - En servicio.
+     s.service = Math.min(s.minutes, t.service + liveServiceMinutes(s.id));
+     s.pending = t.pending;
+     return s;
+@@ -157,14 +165,16 @@ public final class CocoStore extends SQLiteOpenHelper {
+     try (Cursor q =
+         getReadableDatabase()
+             .rawQuery(
+-                "SELECT accepted FROM trips WHERE session=? AND deleted=0 AND status='ASIGNADO'"
++                "SELECT accepted,planned FROM trips WHERE session=? AND deleted=0 AND status='ASIGNADO'"
+                     + " AND accepted>0 ORDER BY at DESC LIMIT 1",
+                 new String[] {sessionId})) {
+       if (!q.moveToFirst()) return 0;
+       long accepted = q.getLong(0);
++      double planned = q.getDouble(1);
+       long now = SystemClock.elapsedRealtime();
+       if (accepted <= 0 || now < accepted) return 0;
+-      return (now - accepted) / 60000.0;
++      double elapsed = (now - accepted) / 60000.0;
++      return planned > 0 ? Math.min(elapsed, planned) : elapsed;
+     }
+   }
+ 
+@@ -262,6 +272,7 @@ public final class CocoStore extends SQLiteOpenHelper {
+     v.put("estimate", Money.cents(result.payout));
+     v.put("cost", Money.cents(result.cost));
+     v.put("minutes", 0);
++    v.put("planned", Math.max(0, result.minutes));
+     v.put("accepted", 0);
+     v.put("key", o.key);
+     v.put("label", automatic ? "Aceptación automática" : "Selección manual detectada");
+@@ -311,6 +322,7 @@ public final class CocoStore extends SQLiteOpenHelper {
+     v.put("estimate", Money.cents(result == null ? 0 : Math.max(0, result.payout)));
+     v.put("cost", Money.cents(result == null ? 0 : Math.max(0, result.cost)));
+     v.put("minutes", 0);
++    v.put("planned", result == null ? 0 : Math.max(0, result.minutes));
+     v.put("accepted", SystemClock.elapsedRealtime());
+     v.put("key", offer == null ? "" : offer.key);
+     v.put(
+@@ -397,7 +409,8 @@ public final class CocoStore extends SQLiteOpenHelper {
+     ContentValues v = new ContentValues();
+     v.put("status", "FINALIZADO");
+     v.put("at", System.currentTimeMillis());
+-    v.put("minutes", Math.max(0, (SystemClock.elapsedRealtime() - t.accepted) / 60000.0));
++    double elapsed = Math.max(0, (SystemClock.elapsedRealtime() - t.accepted) / 60000.0);
++    v.put("minutes", t.planned > 0 ? Math.min(elapsed, t.planned) : elapsed);
+     getWritableDatabase().update("trips", v, "id=? AND status='ASIGNADO'", new String[] {id});
+     touch();
+     return true;
+@@ -420,8 +433,9 @@ public final class CocoStore extends SQLiteOpenHelper {
+   }
+ 
+   /**
+-   * Adds a completed manual entry to an existing session. Its minutes are historical time, not a
+-   * live assignment: they are added immediately to both connected time and service time.
++   * Adds a completed manual entry to an existing session. During a running session its duration is
++   * reclassified from Sin viaje to En servicio without inflating Connected. If the selected session
++   * is paused or already closed, those historical minutes are added to Connected as well.
+    */
+   public synchronized String manualForSession(
+       String sessionId, double payout, double minutes, String label, boolean trip) {
+@@ -435,7 +449,9 @@ public final class CocoStore extends SQLiteOpenHelper {
+       throw new IllegalArgumentException("Elige una sesión válida y revisa los importes");
+ 
+     Session current = session();
+-    if (current.active && sessionId.equals(current.id)) checkpointRemainder(current);
++    boolean currentSession = sessionId.equals(current.id);
++    boolean addToConnected = !currentSession || !current.active || current.paused;
++    if (current.active && currentSession && !current.paused) checkpointRemainder(current);
+ 
+     SQLiteDatabase db = getWritableDatabase();
+     db.beginTransaction();
+@@ -452,11 +468,13 @@ public final class CocoStore extends SQLiteOpenHelper {
+       v.put("actual", Money.cents(payout));
+       v.put("cost", 0);
+       v.put("minutes", minutes);
++      v.put("planned", 0);
+       v.put("accepted", 0);
++      v.put("connected_adjusted", addToConnected ? 1 : 0);
+       v.put("label", label);
+       v.put("trip", trip ? 1 : 0);
+       db.insertOrThrow("trips", null, v);
+-      addConnectedMinutes(db, sessionId, minutes);
++      if (addToConnected) addConnectedMinutes(db, sessionId, minutes);
+       db.setTransactionSuccessful();
+     } finally {
+       db.endTransaction();
+@@ -530,7 +548,7 @@ public final class CocoStore extends SQLiteOpenHelper {
+       v.put("pair", pair && t.offered > 0 ? 1 : 0);
+       if (manualEntry && Double.isFinite(manualMinutes)) {
+         v.put("minutes", manualMinutes);
+-        addConnectedMinutes(db, t.session, manualMinutes - t.minutes);
++        if (t.connectedAdjusted) addConnectedMinutes(db, t.session, manualMinutes - t.minutes);
+       }
+       v.put("status", "FINALIZADO");
+       db.update("trips", v, "id=?", new String[] {id});
+@@ -553,7 +571,7 @@ public final class CocoStore extends SQLiteOpenHelper {
+       ContentValues v = new ContentValues();
+       v.put("deleted", 1);
+       db.update("trips", v, "id=?", new String[] {id});
+-      if (manualEntry) addConnectedMinutes(db, t.session, -t.minutes);
++      if (manualEntry && t.connectedAdjusted) addConnectedMinutes(db, t.session, -t.minutes);
+       db.setTransactionSuccessful();
+     } finally {
+       db.endTransaction();
+@@ -573,7 +591,7 @@ public final class CocoStore extends SQLiteOpenHelper {
+       ContentValues v = new ContentValues();
+       v.put("deleted", 0);
+       db.update("trips", v, "id=?", new String[] {id});
+-      if (manualEntry) addConnectedMinutes(db, t.session, t.minutes);
++      if (manualEntry && t.connectedAdjusted) addConnectedMinutes(db, t.session, t.minutes);
+       db.setTransactionSuccessful();
+     } finally {
+       db.endTransaction();
+@@ -613,7 +631,7 @@ public final class CocoStore extends SQLiteOpenHelper {
+         getReadableDatabase()
+             .rawQuery(
+                 "SELECT"
+-                    + " id,session,at,status,offered,kind,estimate,actual,cost,ordinary,pair,minutes,accepted,key,label,deleted"
++                    + " id,session,at,status,offered,kind,estimate,actual,cost,ordinary,pair,minutes,accepted,key,label,deleted,planned,connected_adjusted"
+                     + " FROM trips WHERE "
+                     + where
+                     + " ORDER BY at DESC",
+@@ -637,6 +655,8 @@ public final class CocoStore extends SQLiteOpenHelper {
+         t.key = q.getString(13);
+         t.label = q.getString(14);
+         t.deleted = q.getInt(15) == 1;
++        t.planned = q.getDouble(16);
++        t.connectedAdjusted = q.getInt(17) == 1;
+         out.add(t);
+       }
+     }
+@@ -676,7 +696,8 @@ public final class CocoStore extends SQLiteOpenHelper {
+                 "SELECT COALESCE(SUM(COALESCE(actual,estimate)-cost),0),"
+                     + "COALESCE(SUM(CASE WHEN status='ASIGNADO' THEN estimate-cost ELSE 0 END),0),"
+                     + "COALESCE(SUM(CASE WHEN status='FINALIZADO' THEN COALESCE(actual,estimate)-cost ELSE 0 END),0),"
+-                    + "COALESCE(SUM(trip),0),COALESCE(SUM(minutes),0),"
++                    + "COALESCE(SUM(trip),0),"
++                    + "COALESCE(SUM(CASE WHEN status='FINALIZADO' THEN minutes ELSE 0 END),0),"
+                     + "COALESCE(SUM(CASE WHEN status='ASIGNADO' THEN 1 ELSE 0 END),0)"
+                     + " FROM trips WHERE deleted=0 AND status IN ('ASIGNADO','FINALIZADO') AND "
+                     + where,
+@@ -810,8 +831,8 @@ public final class CocoStore extends SQLiteOpenHelper {
+   public static class Trip {
+     public String id, session, status, kind, key, label;
+     public long at, accepted;
+-    public boolean confirmed, pair, deleted;
+-    public double offered, estimate, actual, cost, ordinary, minutes;
++    public boolean confirmed, pair, deleted, connectedAdjusted;
++    public double offered, estimate, actual, cost, ordinary, minutes, planned;
+ 
+     public double net() {
+       return (confirmed ? actual : estimate) - cost;
+diff --git a/app/src/main/java/com/cocotaxi/app/CocotaxiAccessibilityService.java b/app/src/main/java/com/cocotaxi/app/CocotaxiAccessibilityService.java
+index 55e58c4..8a76c3a 100644
+--- a/app/src/main/java/com/cocotaxi/app/CocotaxiAccessibilityService.java
++++ b/app/src/main/java/com/cocotaxi/app/CocotaxiAccessibilityService.java
+@@ -27,6 +27,7 @@ public final class CocotaxiAccessibilityService extends AccessibilityService {
+   private String detailSession = "", lastOfferSession = "";
+   private long detailAt;
+   private boolean assignmentSeen;
++  private long assignmentWithoutOfferAt;
+ 
+   // Short-lived hot-path caches. Store revision invalidates them immediately after any session/trip mutation.
+  // [truncated]

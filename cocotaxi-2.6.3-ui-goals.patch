@@ -1,0 +1,268 @@
+diff --git a/CAMBIOS_2.6.3.md b/CAMBIOS_2.6.3.md
+new file mode 100644
+index 0000000..5e7edb9
+--- /dev/null
++++ b/CAMBIOS_2.6.3.md
+@@ -0,0 +1,8 @@
++# COCOTAXI 2.6.3 — UI adaptable y metas equivalentes
++
++- Icono flotante aumentado de 56 dp a 72 dp; ventana minimizada de 66 dp a 82 dp.
++- Pantalla de arranque usa el fondo navy de Coco (#0A1D2E) en lugar de negro, incluido Android 12+.
++- Todas las pantallas principales pueden hacer scroll si el contenido no cabe; la barra inferior permanece fija.
++- Se corrige la equivalencia de metas en días no laborales: ya no se usa una jornada ficticia de 1 hora.
++- Si hoy no es un día configurado, Coco usa la duración promedio de las jornadas activas para convertir Semanal/Jornada/Por hora.
++- versionName 2.6.3 / versionCode 27.
+diff --git a/app/build.gradle b/app/build.gradle
+index 68cf786..28a5040 100644
+--- a/app/build.gradle
++++ b/app/build.gradle
+@@ -10,8 +10,8 @@ android {
+         applicationId 'com.cocotaxi.app'
+         minSdk 26
+         targetSdk 36
+-        versionCode 26
+-        versionName '2.6.2'
++        versionCode 27
++        versionName '2.6.3'
+     }
+ 
+     compileOptions {
+diff --git a/app/src/main/java/com/cocotaxi/app/CocotaxiOverlayService.java b/app/src/main/java/com/cocotaxi/app/CocotaxiOverlayService.java
+index 3c23c1b..37fd365 100644
+--- a/app/src/main/java/com/cocotaxi/app/CocotaxiOverlayService.java
++++ b/app/src/main/java/com/cocotaxi/app/CocotaxiOverlayService.java
+@@ -188,7 +188,7 @@ public final class CocotaxiOverlayService extends Service {
+     icon.setContentDescription("Abrir COCOTAXI; arrastra para mover");
+     // The minimized Coco bubble must have a real measured size. In 2.5.2 this
+     // view was added as 0 x 0, so it became VISIBLE but remained invisible.
+-    LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(dp(56), dp(56));
++    LinearLayout.LayoutParams iconLp = new LinearLayout.LayoutParams(dp(72), dp(72));
+     iconLp.gravity = Gravity.CENTER;
+     top.addView(icon, iconLp);
+     icon.setVisibility(View.GONE);
+@@ -251,7 +251,7 @@ public final class CocotaxiOverlayService extends Service {
+     summary.setVisibility(View.GONE);
+     layout =
+         new WindowManager.LayoutParams(
+-            dp(66),
++            dp(82),
+             WindowManager.LayoutParams.WRAP_CONTENT,
+             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+@@ -416,7 +416,7 @@ public final class CocotaxiOverlayService extends Service {
+     bottom.setVisibility(View.GONE);
+     icon.setVisibility(View.VISIBLE);
+     panel.setBackground(minimizedPanelBackground());
+-    layout.width = dp(66);
++    layout.width = dp(82);
+     try {
+       windows.updateViewLayout(panel, layout);
+     } catch (RuntimeException ignored) {
+diff --git a/app/src/main/java/com/cocotaxi/app/MainActivity.java b/app/src/main/java/com/cocotaxi/app/MainActivity.java
+index 611385a..7c512b0 100644
+--- a/app/src/main/java/com/cocotaxi/app/MainActivity.java
++++ b/app/src/main/java/com/cocotaxi/app/MainActivity.java
+@@ -614,9 +614,15 @@ public final class MainActivity extends Activity {
+     header.addView(profileButton, new LinearLayout.LayoutParams(dp(compactUi ? 46 : 50), dp(compactUi ? 46 : 50)));
+     root.addView(header);
+     body = col();
+-    // Main screens are intentionally composed to fit the viewport without scrolling. Longer
+-    // editors remain inside dialogs, where scrolling is appropriate and does not hide navigation.
+-    root.addView(body, new LinearLayout.LayoutParams(-1, 0, 1));
++    // Keep the bottom navigation fixed, but allow every screen to scroll when a smaller display
++    // (for example the Galaxy A52) cannot fit all cards vertically. On taller phones this behaves
++    // like the previous layout because fillViewport keeps the content at least screen-height.
++    ScrollView screenScroll = new ScrollView(this);
++    screenScroll.setFillViewport(true);
++    screenScroll.setClipToPadding(false);
++    screenScroll.setOverScrollMode(View.OVER_SCROLL_IF_CONTENT_SCROLLS);
++    screenScroll.addView(body, new ScrollView.LayoutParams(-1, -2));
++    root.addView(screenScroll, new LinearLayout.LayoutParams(-1, 0, 1));
+     if (profileView) profile();
+     else if (tab == 0) home();
+     else if (tab == 1) history();
+diff --git a/app/src/main/java/com/cocotaxi/app/SettingsStore.java b/app/src/main/java/com/cocotaxi/app/SettingsStore.java
+index 3ad9bf6..1ed3178 100644
+--- a/app/src/main/java/com/cocotaxi/app/SettingsStore.java
++++ b/app/src/main/java/com/cocotaxi/app/SettingsStore.java
+@@ -229,7 +229,25 @@ public final class SettingsStore {
+   public static double targetHoursForDay(Values values, int mondayBasedDay) {
+     double hours = dayHours(values, mondayBasedDay);
+     if (hours > 0 && (values.workDaysMask & (1 << mondayBasedDay)) != 0) return hours;
+-    return 1.0;
++    // A non-work day must not collapse the economic model to a fake 1-hour jornada.
++    // Use the average configured jornada so editing $/h, jornada or weekly goals always
++    // produces equivalent values, even when settings are changed on a day off.
++    return representativeTargetHours(values);
++  }
++
++  public static double representativeTargetHours(Values values) {
++    double total = 0;
++    int days = 0;
++    for (int i = 0; i < 7; i++) {
++      if ((values.workDaysMask & (1 << i)) == 0) continue;
++      double h = dayHours(values, i);
++      if (h > 0) {
++        total += clamp(h, 1, 18);
++        days++;
++      }
++    }
++    if (days > 0) return total / days;
++    return clamp(values.targetHoursDay > 0 ? values.targetHoursDay : 8, 1, 18);
+   }
+ 
+   private static double dayHours(Values values, int day) {
+diff --git a/app/src/main/res/drawable/app_launch_background.xml b/app/src/main/res/drawable/app_launch_background.xml
+new file mode 100644
+index 0000000..620e370
+--- /dev/null
++++ b/app/src/main/res/drawable/app_launch_background.xml
+@@ -0,0 +1,3 @@
++<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
++    <solid android:color="#0A1D2E" />
++</shape>
+diff --git a/app/src/main/res/values-v31/styles.xml b/app/src/main/res/values-v31/styles.xml
+new file mode 100644
+index 0000000..54746a2
+--- /dev/null
++++ b/app/src/main/res/values-v31/styles.xml
+@@ -0,0 +1,12 @@
++<resources>
++    <style name="AppTheme" parent="@android:style/Theme.Material.NoActionBar">
++        <item name="android:fontFamily">sans</item>
++        <item name="android:windowLightStatusBar">false</item>
++        <item name="android:navigationBarColor">#03111D</item>
++        <item name="android:statusBarColor">#03111D</item>
++        <item name="android:colorAccent">#20E3A2</item>
++        <item name="android:alertDialogTheme">@style/CocoDialog</item>
++        <item name="android:windowBackground">@drawable/app_launch_background</item>
++        <item name="android:windowSplashScreenBackground">@color/splash_background</item>
++    </style>
++</resources>
+diff --git a/app/src/main/res/values/colors.xml b/app/src/main/res/values/colors.xml
+index 76c6d7f..192ada6 100644
+--- a/app/src/main/res/values/colors.xml
++++ b/app/src/main/res/values/colors.xml
+@@ -1,3 +1,4 @@
+ <resources>
+     <color name="launcher_background">#062F20</color>
++    <color name="splash_background">#0A1D2E</color>
+ </resources>
+diff --git a/app/src/main/res/values/styles.xml b/app/src/main/res/values/styles.xml
+index 9da5a8f..42b6764 100644
+--- a/app/src/main/res/values/styles.xml
++++ b/app/src/main/res/values/styles.xml
+@@ -1,6 +1,7 @@
+ <resources>
+     <style name="AppTheme" parent="@android:style/Theme.Material.NoActionBar">
+         <item name="android:fontFamily">sans</item>
++        <item name="android:windowBackground">@drawable/app_launch_background</item>
+         <item name="android:windowLightStatusBar">false</item>
+         <item name="android:navigationBarColor">#03111D</item>
+         <item name="android:statusBarColor">#03111D</item>
+diff --git a/app/src/test/java/com/cocotaxi/app/OverlayTest.java b/app/src/test/java/com/cocotaxi/app/OverlayTest.java
+index 641b428..8fc35ad 100644
+--- a/app/src/test/java/com/cocotaxi/app/OverlayTest.java
++++ b/app/src/test/java/com/cocotaxi/app/OverlayTest.java
+@@ -133,4 +133,12 @@ public class OverlayTest {
+         false);
+     assertEquals("RECHAZAR", label.getText().toString());
+   }
++
++  @Test
++  public void floatingCocoIconUsesLargerTouchSize() throws Exception {
++    View icon = icon();
++    int expected = Math.round(72 * service.getResources().getDisplayMetrics().density);
++    assertEquals(expected, icon.getLayoutParams().width);
++    assertEquals(expected, icon.getLayoutParams().height);
++  }
+ }
+diff --git a/app/src/test/java/com/cocotaxi/app/PromotionStoreTest.java b/app/src/test/java/com/cocotaxi/app/PromotionStoreTest.java
+index 8810727..7e583a2 100644
+--- a/app/src/test/java/com/cocotaxi/app/PromotionStoreTest.java
++++ b/app/src/test/java/com/cocotaxi/app/PromotionStoreTest.java
+@@ -74,4 +74,39 @@ public class PromotionStoreTest {
+   for(int i=0;i<7;i++) assertEquals(6+i,SettingsStore.targetHoursForDay(loaded,i),.001);
+   assertEquals(63,loaded.hoursWeek,.001);
+  }
++
++ @Test public void goalsStayEquivalentFromAnyEditedSource() {
++  SettingsStore.Values hourly=new SettingsStore.Values();
++  hourly.goalMode=2;hourly.realGoalHour=800;hourly.workDaysMask=0x3f;
++  hourly.workDayHours=new double[]{10,10,10,10,10,10,0};
++  SettingsStore.normalizeGoals(hourly);
++  assertEquals(800,hourly.realGoalHour,.001);
++  assertEquals(8000,hourly.dailyGoal,.001);
++  assertEquals(48000,hourly.weeklyGoal,.001);
++
++  SettingsStore.Values daily=new SettingsStore.Values();
++  daily.goalMode=1;daily.dailyGoal=8000;daily.workDaysMask=0x3f;
++  daily.workDayHours=new double[]{10,10,10,10,10,10,0};
++  SettingsStore.normalizeGoals(daily);
++  assertEquals(800,daily.realGoalHour,.001);
++  assertEquals(8000,daily.dailyGoal,.001);
++  assertEquals(48000,daily.weeklyGoal,.001);
++
++  SettingsStore.Values weekly=new SettingsStore.Values();
++  weekly.goalMode=0;weekly.weeklyGoal=48000;weekly.workDaysMask=0x3f;
++  weekly.workDayHours=new double[]{10,10,10,10,10,10,0};
++  SettingsStore.normalizeGoals(weekly);
++  assertEquals(800,weekly.realGoalHour,.001);
++  assertEquals(8000,weekly.dailyGoal,.001);
++  assertEquals(48000,weekly.weeklyGoal,.001);
++ }
++
++ @Test public void offDayUsesRepresentativeJornadaInsteadOfOneHour() {
++  SettingsStore.Values v=new SettingsStore.Values();
++  v.goalMode=2;v.realGoalHour=800;v.workDaysMask=0x3f;
++  v.workDayHours=new double[]{8,9,10,11,12,10,0};
++  SettingsStore.normalizeGoals(v);
++  assertEquals(10,SettingsStore.targetHoursForDay(v,6),.001);
++  assertEquals(8000,v.dailyGoal,.001);
++ }
+ }
+diff --git a/app/src/test/java/com/cocotaxi/app/UiTest.java b/app/src/test/java/com/cocotaxi/app/UiTest.java
+index 2ef253b..d7ecabf 100644
+--- a/app/src/test/java/com/cocotaxi/app/UiTest.java
++++ b/app/src/test/java/com/cocotaxi/app/UiTest.java
+@@ -67,6 +67,19 @@ public class UiTest {
+     return null;
+   }
+ 
++
++  private <T extends View> T findType(View v, Class<T> type) {
++    if (type.isInstance(v)) return type.cast(v);
++    if (v instanceof ViewGroup) {
++      ViewGroup g = (ViewGroup) v;
++      for (int i = 0; i < g.getChildCount(); i++) {
++        T found = findType(g.getChildAt(i), type);
++        if (found != null) return found;
++      }
++    }
++    return null;
++  }
++
+   private void snapshot(MainActivity a, String name) throws Exception {
+     View v = a.getWindow().getDecorView();
+     int w = 1179, h = 2556;
+@@ -184,4 +197,20 @@ public class UiTest {
+       assertNotNull(find(a.getWindow().getDecorView(), "Creado por Frank Carlos"));
+     }
+   }
++
++  @Test
++  @Config(sdk = 34, qualifiers = "w360dp-h640dp-xxhdpi")
++  public void smallScreensCanScrollEveryMainScreen() {
++    try (ActivityController<MainActivity> ac =
++        Robolectric.buildActivity(MainActivity.class).setup()) {
++      MainActivity a = ac.get();
++      assertNotNull(findType(a.getWindow().getDecorView(), ScrollView.class));
++      click(a, "Sesión");
++      assertNotNull(findType(a.getWindow().getDecorView(), ScrollView.class));
++      click(a, "Metas");
++      assertNotNull(findType(a.getWindow().getDecorView(), ScrollView.class));
++      click(a, "Ajustes");
++      assertNotNull(findType(a.getWindow().getDecorView(), ScrollView.class));
++    }
++  }
+ }

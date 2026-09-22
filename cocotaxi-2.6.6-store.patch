@@ -1,0 +1,233 @@
+--- a/app/src/main/java/com/cocotaxi/app/CocoStore.java
++++ b/app/src/main/java/com/cocotaxi/app/CocoStore.java
+@@ -287,6 +287,43 @@
+     return changed;
+   }
+ 
++  /**
++   * Records an assignment visible on Cabify's pickup screen even if the driver tapped Accept
++   * manually and the offer card disappeared before Coco captured its amount. A recent known offer
++   * keeps its estimate; otherwise a zero-value assigned trip starts the real live service clock and
++   * the payment can be corrected later.
++   */
++  public synchronized String observedAssignment(
++      Offer offer, DecisionEngine.Result result, boolean automatic) {
++    Session s = session();
++    if (!s.active || s.paused) return null;
++    Trip active = activeTrip();
++    if (active != null) return active.id;
++
++    String id = UUID.randomUUID().toString();
++    ContentValues v = new ContentValues();
++    v.put("id", id);
++    v.put("session", s.id);
++    v.put("at", System.currentTimeMillis());
++    v.put("status", "ASIGNADO");
++    v.put("offered", offer == null ? 0 : offer.fare);
++    v.put("kind", offer == null ? "UNKNOWN" : offer.kind);
++    v.put("estimate", Money.cents(result == null ? 0 : Math.max(0, result.payout)));
++    v.put("cost", Money.cents(result == null ? 0 : Math.max(0, result.cost)));
++    v.put("minutes", 0);
++    v.put("accepted", SystemClock.elapsedRealtime());
++    v.put("key", offer == null ? "" : offer.key);
++    v.put(
++        "label",
++        offer == null
++            ? "Viaje aceptado en Cabify · importe pendiente"
++            : automatic ? "Aceptación automática" : "Aceptación manual detectada");
++    v.put("trip", 1);
++    getWritableDatabase().insertOrThrow("trips", null, v);
++    touch();
++    return id;
++  }
++
+   /** Remove the default trip confirmation without deleting the record. */
+   public synchronized void unconfirm(String id) {
+     Trip t = find(id);
+@@ -379,31 +416,83 @@
+ 
+   public String manual(double payout, double minutes, String label, boolean trip) {
+     Session s = session();
+-    if (!s.active
++    return manualForSession(s.id, payout, minutes, label, trip);
++  }
++
++  /**
++   * Adds a completed manual entry to an existing session. Its minutes are historical time, not a
++   * live assignment: they are added immediately to both connected time and service time.
++   */
++  public synchronized String manualForSession(
++      String sessionId, double payout, double minutes, String label, boolean trip) {
++    if (sessionId == null
++        || sessionId.isEmpty()
++        || !sessionExists(sessionId)
+         || !Double.isFinite(payout)
+         || payout < 0
+         || !Double.isFinite(minutes)
+         || minutes < 0)
+-      throw new IllegalArgumentException("Inicia la sesión; revisa los importes");
++      throw new IllegalArgumentException("Elige una sesión válida y revisa los importes");
++
++    Session current = session();
++    if (current.active && sessionId.equals(current.id)) checkpointRemainder(current);
++
++    SQLiteDatabase db = getWritableDatabase();
++    db.beginTransaction();
+     String id = UUID.randomUUID().toString();
+-    ContentValues v = new ContentValues();
+-    v.put("id", id);
+-    v.put("session", s.id);
+-    v.put("at", System.currentTimeMillis());
+-    v.put("status", "FINALIZADO");
+-    v.put("offered", 0);
+-    v.put("kind", "UNKNOWN");
+-    v.put("estimate", 0);
+-    v.put("actual", Money.cents(payout));
+-    v.put("cost", 0);
+-    v.put("minutes", minutes);
+-    v.put("label", label);
+-    v.put("trip", trip ? 1 : 0);
+-    getWritableDatabase().insertOrThrow("trips", null, v);
++    try {
++      ContentValues v = new ContentValues();
++      v.put("id", id);
++      v.put("session", sessionId);
++      v.put("at", manualTimestamp(sessionId));
++      v.put("status", "FINALIZADO");
++      v.put("offered", 0);
++      v.put("kind", "UNKNOWN");
++      v.put("estimate", 0);
++      v.put("actual", Money.cents(payout));
++      v.put("cost", 0);
++      v.put("minutes", minutes);
++      v.put("accepted", 0);
++      v.put("label", label);
++      v.put("trip", trip ? 1 : 0);
++      db.insertOrThrow("trips", null, v);
++      addConnectedMinutes(db, sessionId, minutes);
++      db.setTransactionSuccessful();
++    } finally {
++      db.endTransaction();
++    }
+     touch();
+     return id;
+   }
+ 
++  private boolean sessionExists(String sessionId) {
++    try (Cursor q =
++        getReadableDatabase()
++            .rawQuery("SELECT 1 FROM sessions WHERE id=? LIMIT 1", new String[] {sessionId})) {
++      return q.moveToFirst();
++    }
++  }
++
++  private long manualTimestamp(String sessionId) {
++    try (Cursor q =
++        getReadableDatabase()
++            .rawQuery("SELECT start,end FROM sessions WHERE id=? LIMIT 1", new String[] {sessionId})) {
++      if (!q.moveToFirst()) return System.currentTimeMillis();
++      long start = q.getLong(0);
++      long end = q.getLong(1);
++      // Historical entries belong to the selected session also in day/week analytics.
++      return end > 0 ? end : Math.max(start, System.currentTimeMillis());
++    }
++  }
++
++  private void addConnectedMinutes(SQLiteDatabase db, String sessionId, double minutes) {
++    if (!Double.isFinite(minutes) || minutes == 0) return;
++    long deltaMs = Math.round(minutes * 60000.0);
++    db.execSQL(
++        "UPDATE sessions SET ms=MAX(0,ms+?) WHERE id=?",
++        new Object[] {deltaMs, sessionId});
++  }
++
+   public void correct(String id, double actual, double cost, boolean pair, double ordinary) {
+     correct(id, actual, cost, pair, ordinary, Double.NaN);
+   }
+@@ -425,28 +514,70 @@
+     boolean manualEntry = t.offered <= 0 && t.accepted <= 0;
+     if (manualEntry && Double.isFinite(manualMinutes) && manualMinutes < 0)
+       throw new IllegalArgumentException("Minutos no válidos");
+-    ContentValues v = new ContentValues();
+-    v.put("actual", Money.cents(actual));
+-    v.put("cost", Money.cents(cost));
+-    v.put("ordinary", ordinary);
+-    v.put("pair", pair && t.offered > 0 ? 1 : 0);
+-    if (manualEntry && Double.isFinite(manualMinutes)) v.put("minutes", manualMinutes);
+-    v.put("status", "FINALIZADO");
+-    getWritableDatabase().update("trips", v, "id=?", new String[] {id});
++    Session current = session();
++    if (manualEntry
++        && Double.isFinite(manualMinutes)
++        && current.active
++        && t.session.equals(current.id)) checkpointRemainder(current);
++
++    SQLiteDatabase db = getWritableDatabase();
++    db.beginTransaction();
++    try {
++      ContentValues v = new ContentValues();
++      v.put("actual", Money.cents(actual));
++      v.put("cost", Money.cents(cost));
++      v.put("ordinary", ordinary);
++      v.put("pair", pair && t.offered > 0 ? 1 : 0);
++      if (manualEntry && Double.isFinite(manualMinutes)) {
++        v.put("minutes", manualMinutes);
++        addConnectedMinutes(db, t.session, manualMinutes - t.minutes);
++      }
++      v.put("status", "FINALIZADO");
++      db.update("trips", v, "id=?", new String[] {id});
++      db.setTransactionSuccessful();
++    } finally {
++      db.endTransaction();
++    }
+     touch();
+   }
+ 
+-  public void delete(String id) {
+-    ContentValues v = new ContentValues();
+-    v.put("deleted", 1);
+-    getWritableDatabase().update("trips", v, "id=?", new String[] {id});
++  public synchronized void delete(String id) {
++    Trip t = find(id);
++    if (t == null || t.deleted) return;
++    boolean manualEntry = t.offered <= 0 && t.accepted <= 0;
++    Session current = session();
++    if (manualEntry && current.active && t.session.equals(current.id)) checkpointRemainder(current);
++    SQLiteDatabase db = getWritableDatabase();
++    db.beginTransaction();
++    try {
++      ContentValues v = new ContentValues();
++      v.put("deleted", 1);
++      db.update("trips", v, "id=?", new String[] {id});
++      if (manualEntry) addConnectedMinutes(db, t.session, -t.minutes);
++      db.setTransactionSuccessful();
++    } finally {
++      db.endTransaction();
++    }
+     touch();
+   }
+ 
+-  public void restore(String id) {
+-    ContentValues v = new ContentValues();
+-    v.put("deleted", 0);
+-    getWritableDatabase().update("trips", v, "id=?", new String[] {id});
++  public synchronized void restore(String id) {
++    Trip t = find(id);
++    if (t == null || !t.deleted) return;
++    boolean manualEntry = t.offered <= 0 && t.accepted <= 0;
++    Session current = session();
++    if (manualEntry && current.active && t.session.equals(current.id)) checkpointRemainder(current);
++    SQLiteDatabase db = getWritableDatabase();
++    db.beginTransaction();
++    try {
++      ContentValues v = new ContentValues();
++      v.put("deleted", 0);
++      db.update("trips", v, "id=?", new String[] {id});
++      if (manualEntry) addConnectedMinutes(db, t.session, t.minutes);
++      db.setTransactionSuccessful();
++    } finally {
++      db.endTransaction();
++    }
+     touch();
+   }
+ 

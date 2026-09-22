@@ -1,0 +1,15 @@
+diff --git a/app/build.gradle b/app/build.gradle
+--- a/app/build.gradle
++++ b/app/build.gradle
+@@ -8,10 +8,10 @@ android {
+ 
+     defaultConfig {
+-        applicationId 'com.cocotaxi.app'
++        applicationId 'com.cocotaxi.independent'
+         minSdk 26
+         targetSdk 36
+-        versionCode 39
+-        versionName '2.8.3'
++        versionCode 40
++        versionName '2.8.4'
+     }

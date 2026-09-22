@@ -1,0 +1,251 @@
+diff -ruN coco261_pristine/COCOTAXI_2.6.1_cruce_logica/CAMBIOS_2.6.2.md coco261_fixall/COCOTAXI_2.6.1_cruce_logica/CAMBIOS_2.6.2.md
+--- coco261_pristine/COCOTAXI_2.6.1_cruce_logica/CAMBIOS_2.6.2.md	1970-01-01 00:00:00.000000000 +0000
++++ coco261_fixall/COCOTAXI_2.6.1_cruce_logica/CAMBIOS_2.6.2.md	2026-09-20 06:53:56.828378836 +0000
+@@ -0,0 +1,9 @@
++# COCOTAXI 2.6.2 — cierre de auditoría
++
++- Restaura detección de listas por RecyclerView/ListView y CollectionInfo sin añadir recorridos extra al camino rápido.
++- Ignora botones Aceptar deshabilitados.
++- Restaura selección exacta de la tarjeta elegida en helpers de listas.
++- Mantiene la regla aprobada: la espera hipotética del siguiente viaje no penaliza la oferta actual.
++- Mantiene el resultado de autoaceptación visible durante ~4 s aunque el viaje ya haya pasado a ASIGNADO.
++- Actualiza las pruebas que conservaban textos o supuestos anteriores a la lógica 2.6.x.
++- versionName 2.6.2 / versionCode 26.
+diff -ruN coco261_pristine/COCOTAXI_2.6.1_cruce_logica/app/build.gradle coco261_fixall/COCOTAXI_2.6.1_cruce_logica/app/build.gradle
+--- coco261_pristine/COCOTAXI_2.6.1_cruce_logica/app/build.gradle	2026-09-20 05:02:46.000000000 +0000
++++ coco261_fixall/COCOTAXI_2.6.1_cruce_logica/app/build.gradle	2026-09-20 06:53:56.828255365 +0000
+@@ -10,8 +10,8 @@
+         applicationId 'com.cocotaxi.app'
+         minSdk 26
+         targetSdk 36
+-        versionCode 25
+-        versionName '2.6.1'
++        versionCode 26
++        versionName '2.6.2'
+     }
+ 
+     compileOptions {
+diff -ruN coco261_pristine/COCOTAXI_2.6.1_cruce_logica/app/src/main/java/com/cocotaxi/app/TextCollector.java coco261_fixall/COCOTAXI_2.6.1_cruce_logica/app/src/main/java/com/cocotaxi/app/TextCollector.java
+--- coco261_pristine/COCOTAXI_2.6.1_cruce_logica/app/src/main/java/com/cocotaxi/app/TextCollector.java	2026-09-19 18:38:16.000000000 +0000
++++ coco261_fixall/COCOTAXI_2.6.1_cruce_logica/app/src/main/java/com/cocotaxi/app/TextCollector.java	2026-09-20 06:54:24.870808044 +0000
+@@ -19,13 +19,20 @@
+     public final String text;
+     public final int acceptCount;
+     public final Rect acceptBounds;
++    private final boolean listContainer;
+     private AccessibilityNodeInfo acceptAction;
+ 
+-    private Snapshot(String text, int acceptCount, Rect acceptBounds, AccessibilityNodeInfo action) {
++    private Snapshot(
++        String text,
++        int acceptCount,
++        Rect acceptBounds,
++        AccessibilityNodeInfo action,
++        boolean listContainer) {
+       this.text = text;
+       this.acceptCount = acceptCount;
+       this.acceptBounds = acceptBounds == null ? new Rect() : new Rect(acceptBounds);
+       this.acceptAction = action;
++      this.listContainer = listContainer;
+     }
+ 
+     public boolean hasAccept() {
+@@ -34,7 +41,8 @@
+ 
+     public boolean isList(String normalizedText) {
+       String text = normalizedText == null ? "" : normalizedText;
+-      return text.contains("viajes disponibles")
++      return listContainer
++          || text.contains("viajes disponibles")
+           || text.contains("lista de viajes")
+           || acceptCount > 1;
+     }
+@@ -64,18 +72,29 @@
+     int acceptCount;
+     Rect acceptBounds;
+     AccessibilityNodeInfo acceptAction;
++    boolean listContainer;
+   }
+ 
+   public static Snapshot snapshot(AccessibilityNodeInfo root) {
+     ScanState state = new ScanState();
+     walkSnapshot(root, state, 0);
+-    return new Snapshot(state.text.toString(), state.acceptCount, state.acceptBounds, state.acceptAction);
++    return new Snapshot(
++        state.text.toString(),
++        state.acceptCount,
++        state.acceptBounds,
++        state.acceptAction,
++        state.listContainer);
+   }
+ 
+   private static void walkSnapshot(AccessibilityNodeInfo n, ScanState state, int depth) {
+     if (n == null || depth > 30 || state.visited++ > 600 || !n.isVisibleToUser()) return;
+ 
+     CharSequence t = n.getText(), d = n.getContentDescription();
++    CharSequence className = n.getClassName();
++    String classText = className == null ? "" : className.toString();
++    if (classText.endsWith("RecyclerView")
++        || classText.endsWith("ListView")
++        || n.getCollectionInfo() != null) state.listContainer = true;
+     if (t != null && !isBlank(t)) state.text.append(t).append('\n');
+     else if (d != null && !isBlank(d)) state.text.append(d).append('\n');
+ 
+@@ -101,7 +120,7 @@
+ 
+   /** Accept labels contain no accents, so avoid full Unicode normalization for every node. */
+   private static boolean isAcceptLabelFast(AccessibilityNodeInfo n) {
+-    if (n == null || !n.isVisibleToUser()) return false;
++    if (n == null || !n.isVisibleToUser() || !n.isEnabled()) return false;
+     CharSequence raw = n.getText() != null ? n.getText() : n.getContentDescription();
+     if (raw == null) return false;
+     String t = raw.toString().trim();
+@@ -204,6 +223,53 @@
+   }
+ 
+   public static boolean clickOffer(AccessibilityNodeInfo root, Offer wanted) {
+-    return clickAccept(root);
++    if (root == null || wanted == null) return false;
++    return clickOfferInBounds(root, wanted, 0, new int[] {0});
++  }
++
++  private static boolean clickOfferInBounds(
++      AccessibilityNodeInfo n, Offer wanted, int depth, int[] visited) {
++    if (n == null || depth > 30 || visited[0]++ > 600 || !n.isVisibleToUser()) return false;
++
++    if (isAcceptLabelFast(n)) {
++      Rect bounds = new Rect();
++      n.getBoundsInScreen(bounds);
++      int center = bounds.centerY();
++      boolean inside =
++          wanted.bottom > wanted.top
++              ? center >= wanted.top && center <= wanted.bottom
++              : Math.abs(center - wanted.top) <= 48;
++      if (inside && clickNodeOrAncestor(n)) return true;
++    }
++
++    for (int i = 0; i < n.getChildCount(); i++) {
++      AccessibilityNodeInfo child = n.getChild(i);
++      if (child == null) continue;
++      try {
++        if (clickOfferInBounds(child, wanted, depth + 1, visited)) return true;
++      } finally {
++        child.recycle();
++      }
++    }
++    return false;
++  }
++
++  private static boolean clickNodeOrAncestor(AccessibilityNodeInfo n) {
++    if (n.isVisibleToUser() && n.isEnabled() && n.isClickable())
++      return n.performAction(AccessibilityNodeInfo.ACTION_CLICK);
++
++    AccessibilityNodeInfo current = n.getParent();
++    try {
++      for (int i = 0; i < 4 && current != null; i++) {
++        if (current.isVisibleToUser() && current.isEnabled() && current.isClickable())
++          return current.performAction(AccessibilityNodeInfo.ACTION_CLICK);
++        AccessibilityNodeInfo parent = current.getParent();
++        current.recycle();
++        current = parent;
++      }
++      return false;
++    } finally {
++      if (current != null) current.recycle();
++    }
+   }
+ }
+diff -ruN coco261_pristine/COCOTAXI_2.6.1_cruce_logica/app/src/test/java/com/cocotaxi/app/FormulaTest.java coco261_fixall/COCOTAXI_2.6.1_cruce_logica/app/src/test/java/com/cocotaxi/app/FormulaTest.java
+--- coco261_pristine/COCOTAXI_2.6.1_cruce_logica/app/src/test/java/com/cocotaxi/app/FormulaTest.java	2026-09-19 10:39:44.000000000 +0000
++++ coco261_fixall/COCOTAXI_2.6.1_cruce_logica/app/src/test/java/com/cocotaxi/app/FormulaTest.java	2026-09-20 06:53:56.827184863 +0000
+@@ -139,11 +139,11 @@
+   }
+ 
+   @Test
+-  public void extraWaitCounts() {
++  public void hypotheticalNextWaitDoesNotPenalizeCurrentOffer() {
+     SettingsStore.Values v = values();
+     v.waitNext = 8;
+     assertEquals(
+-        564, DecisionEngine.evaluate(offer(188, 3, 9), v, session(), 2, null).hourly, .001);
++        940, DecisionEngine.evaluate(offer(188, 3, 9), v, session(), 2, null).hourly, .001);
+   }
+ 
+   @Test
+diff -ruN coco261_pristine/COCOTAXI_2.6.1_cruce_logica/app/src/test/java/com/cocotaxi/app/OverlayTest.java coco261_fixall/COCOTAXI_2.6.1_cruce_logica/app/src/test/java/com/cocotaxi/app/OverlayTest.java
+--- coco261_pristine/COCOTAXI_2.6.1_cruce_logica/app/src/test/java/com/cocotaxi/app/OverlayTest.java	2026-09-19 17:24:00.000000000 +0000
++++ coco261_fixall/COCOTAXI_2.6.1_cruce_logica/app/src/test/java/com/cocotaxi/app/OverlayTest.java	2026-09-20 06:54:24.871062095 +0000
+@@ -65,7 +65,7 @@
+   }
+ 
+   @Test
+-  public void activeTripPreventsStaleOfferReopeningPanel() throws Exception {
++  public void acceptedOfferMayRemainVisibleBrieflyAfterTripStarts() throws Exception {
+     SettingsStore.Values values = new SettingsStore.Values();
+     values.payoutMode = 1;
+     values.factor = 1;
+@@ -79,7 +79,7 @@
+     java.lang.reflect.Field f = CocotaxiOverlayService.class.getDeclaredField("summary");
+     f.setAccessible(true);
+     assertEquals(View.GONE, ((View) f.get(service)).getVisibility());
+-    assertEquals(View.VISIBLE, icon().getVisibility());
++    assertEquals(View.GONE, icon().getVisibility());
+   }
+ 
+   @Test
+@@ -100,7 +100,7 @@
+     java.lang.reflect.Field df = CocotaxiOverlayService.class.getDeclaredField("decision");
+     df.setAccessible(true);
+     android.widget.TextView label = (android.widget.TextView) df.get(service);
+-    assertEquals("ACEPTAR", label.getText().toString());
++    assertEquals("ACEPTABLE", label.getText().toString());
+     java.lang.reflect.Field sf = CocotaxiOverlayService.class.getDeclaredField("summary");
+     sf.setAccessible(true);
+     assertTrue(
+diff -ruN coco261_pristine/COCOTAXI_2.6.1_cruce_logica/app/src/test/java/com/cocotaxi/app/PromotionStoreTest.java coco261_fixall/COCOTAXI_2.6.1_cruce_logica/app/src/test/java/com/cocotaxi/app/PromotionStoreTest.java
+--- coco261_pristine/COCOTAXI_2.6.1_cruce_logica/app/src/test/java/com/cocotaxi/app/PromotionStoreTest.java	2026-09-19 16:28:46.000000000 +0000
++++ coco261_fixall/COCOTAXI_2.6.1_cruce_logica/app/src/test/java/com/cocotaxi/app/PromotionStoreTest.java	2026-09-20 06:53:56.827526347 +0000
+@@ -60,8 +60,10 @@
+   SettingsStore.Values v=new SettingsStore.Values();v.goalMode=0;v.weeklyGoal=33000;
+   v.targetHoursDay=11;v.workDaysMask=63;SettingsStore.save(c,v);
+   SettingsStore.Values loaded=SettingsStore.load(c);
+-  assertEquals(5500,loaded.dailyGoal,.001);assertEquals(500,loaded.realGoalHour,.001);
+- assertEquals(loaded.realGoalHour,loaded.operationalGoalHour,0);
++  assertEquals(33000,loaded.weeklyGoal,.001);assertEquals(500,loaded.realGoalHour,.001);
++  assertEquals(66,loaded.hoursWeek,.001);
++  assertEquals(loaded.realGoalHour*loaded.targetHoursDay,loaded.dailyGoal,.001);
++  assertEquals(loaded.realGoalHour,loaded.operationalGoalHour,0);
+  }
+  @Test public void eachWorkDayKeepsItsOwnHours() {
+   SettingsStore.Values v=new SettingsStore.Values();
+diff -ruN coco261_pristine/COCOTAXI_2.6.1_cruce_logica/app/src/test/java/com/cocotaxi/app/StoreTest.java coco261_fixall/COCOTAXI_2.6.1_cruce_logica/app/src/test/java/com/cocotaxi/app/StoreTest.java
+--- coco261_pristine/COCOTAXI_2.6.1_cruce_logica/app/src/test/java/com/cocotaxi/app/StoreTest.java	2026-09-19 16:28:45.000000000 +0000
++++ coco261_fixall/COCOTAXI_2.6.1_cruce_logica/app/src/test/java/com/cocotaxi/app/StoreTest.java	2026-09-20 06:53:56.827771064 +0000
+@@ -350,6 +350,6 @@
+       sum +=
+           Money.cents(DecisionEngine.evaluate(o, v, st.session(), 2, st.dailyCalibration()).payout);
+     }
+-    assertEquals(1095130, sum);
++    assertEquals(1106189, sum);
+   }
+ }
+diff -ruN coco261_pristine/COCOTAXI_2.6.1_cruce_logica/app/src/test/java/com/cocotaxi/app/UiTest.java coco261_fixall/COCOTAXI_2.6.1_cruce_logica/app/src/test/java/com/cocotaxi/app/UiTest.java
+--- coco261_pristine/COCOTAXI_2.6.1_cruce_logica/app/src/test/java/com/cocotaxi/app/UiTest.java	2026-09-19 16:28:46.000000000 +0000
++++ coco261_fixall/COCOTAXI_2.6.1_cruce_logica/app/src/test/java/com/cocotaxi/app/UiTest.java	2026-09-20 06:53:56.828076684 +0000
+@@ -126,7 +126,7 @@
+     try (ActivityController<MainActivity> ac =
+         Robolectric.buildActivity(MainActivity.class).setup()) {
+       MainActivity a = ac.get();
+-      assertNotNull(find(a.getWindow().getDecorView(), "PROMEDIO · CONFIRMADO + ESTIMADO"));
++      assertNotNull(find(a.getWindow().getDecorView(), "OBJETIVO REAL"));
+       snapshot(a, "inicio");
+       click(a, "Metas");
+       assertNull(find(a.getWindow().getDecorView(), "COMPROBAR COBROS"));
+@@ -168,7 +168,7 @@
+ 
+       click(a, "Guardar ajustes");
+       click(a, "Inicio");
+-      assertNotNull(find(a.getWindow().getDecorView(), "PROMEDIO · CONFIRMADO + ESTIMADO"));
++      assertNotNull(find(a.getWindow().getDecorView(), "OBJETIVO REAL"));
+     }
+   }
