@@ -1,8 +1,7 @@
 diff --git a/app/build.gradle b/app/build.gradle
 --- a/app/build.gradle
 +++ b/app/build.gradle
-@@ -6,12 +6,12 @@ android {
-     compileSdk 36
+@@ -8,10 +8,10 @@ android {
  
      defaultConfig {
 -        applicationId 'com.cocotaxi.app'
@@ -14,4 +13,3 @@ diff --git a/app/build.gradle b/app/build.gradle
 +        versionCode 40
 +        versionName '2.8.4'
      }
- }
