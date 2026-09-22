@@ -113,7 +113,6 @@ jobs:
       - name: Apply COCOTAXI 3.0.0 all-in core data atlas learning advisor
         shell: bash
         run: |
-          echo "2d060c470b908ec05ec20abb876bc8e99fdd29bbea03ff980e0e19f0c5d8fdcb  cocotaxi-3.0.0.patch.gz.b64" | sha256sum -c -
           base64 -d cocotaxi-3.0.0.patch.gz.b64 | gzip -dc > /tmp/coco300.patch
           echo "2d32c1ac3b5cfaa1d22c7bef9d70bd1923a21fb59ade7d9766aab280b2c95a96  /tmp/coco300.patch" | sha256sum -c -
           patch --batch -p1 -d "$PROJECT_DIR" < /tmp/coco300.patch
