@@ -113,9 +113,9 @@ jobs:
       - name: Apply COCOTAXI 2.7.2 clock accessibility and demand fixes
         shell: bash
         run: |
-          echo "d740b5b2e7f22089fabc5614e44fbb98088f04d32b540b04a4f348acd6a21420  cocotaxi-2.7.2.patch.gz.b64" | sha256sum -c -
+          echo "780d8285558ab5588d600e1cbdb5761fec997fa16869c071ed87851111d128c7  cocotaxi-2.7.2.patch.gz.b64" | sha256sum -c -
           base64 -d cocotaxi-2.7.2.patch.gz.b64 | gzip -dc > /tmp/coco272.patch
-          echo "7c34f0a7013a4bc77419a8f64b293db0b8eb75b2615a993520336a1ef834b128  /tmp/coco272.patch" | sha256sum -c -
+          echo "66cc894ab6966f2620b752b722e2d07755bce1276590083048398ce51d9ad795  /tmp/coco272.patch" | sha256sum -c -
           patch --batch -p1 -d "$PROJECT_DIR" < /tmp/coco272.patch
 
       - name: Set up Java 17
