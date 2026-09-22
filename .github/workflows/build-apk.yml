@@ -5,6 +5,7 @@ on:
   push:
     paths:
       - 'COCOTAXI_2.4.2_sesion_icono_sin_espera_fuentes.zip'
+      - 'COCOTAXI_2.6.1_cruce_logica.zip'
       - 'cocotaxi-2.4.3.patch.gz.b64'
       - 'cocotaxi-2.4.4-app.patch.gz.b64'
       - 'cocotaxi-2.4.5-app.patch.gz.b64.part*'
@@ -13,13 +14,19 @@ on:
       - 'prepare_project.sh'
       - '.github/workflows/build-apk.yml'
 
-# Reconstruct the verified source chain, test it and compile COCOTAXI 2.4.7.
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Upload current repository source base
+        uses: actions/upload-artifact@v4
+        with:
+          name: COCOTAXI-repo-base-source
+          path: COCOTAXI_2.6.1_cruce_logica.zip
+          if-no-files-found: error
 
       - name: Set up Java 17
         uses: actions/setup-java@v5
@@ -39,15 +46,7 @@ jobs:
         run: |
           cd "$PROJECT_DIR"
           chmod +x gradlew
-          ./gradlew --no-daemon testDebugUnitTest \
-            --tests com.cocotaxi.app.PinStoreTest \
-            --tests com.cocotaxi.app.StoreTest.photographedOriginConfirmsAssignmentOnlyOnce \
-            --tests com.cocotaxi.app.StoreTest.confirmedAcceptanceStartsLiveServiceAndIncomeImmediately \
-            --tests com.cocotaxi.app.StoreTest.driverCanRemoveAndRestoreDefaultTripConfirmation \
-            --tests com.cocotaxi.app.StoreTest.finishButtonNotCompletion \
-            --tests com.cocotaxi.app.StoreTest.completedExactlyOnce \
-            --tests com.cocotaxi.app.UiTest.iconMinimizesOnlyResumedCoco \
-            --tests com.cocotaxi.app.UiTest.fourTabsAndScreensRender
+          ./gradlew --no-daemon testDebugUnitTest             --tests com.cocotaxi.app.PinStoreTest             --tests com.cocotaxi.app.StoreTest.photographedOriginConfirmsAssignmentOnlyOnce             --tests com.cocotaxi.app.StoreTest.confirmedAcceptanceStartsLiveServiceAndIncomeImmediately             --tests com.cocotaxi.app.StoreTest.driverCanRemoveAndRestoreDefaultTripConfirmation             --tests com.cocotaxi.app.StoreTest.finishButtonNotCompletion             --tests com.cocotaxi.app.StoreTest.completedExactlyOnce             --tests com.cocotaxi.app.UiTest.iconMinimizesOnlyResumedCoco             --tests com.cocotaxi.app.UiTest.fourTabsAndScreensRender
 
       - name: Build debug APK
         run: |
