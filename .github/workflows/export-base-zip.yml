@@ -1,0 +1,22 @@
+name: Export base COCOTAXI zip
+
+on:
+  push:
+    branches:
+      - build-cocotaxi-2.8.0-20260922
+    paths:
+      - '.github/workflows/export-base-zip.yml'
+  workflow_dispatch:
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Upload existing base zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: cocotaxi-base-zip
+          path: COCOTAXI_2.6.1_cruce_logica.zip
+          if-no-files-found: error
