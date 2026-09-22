@@ -1,0 +1,2275 @@
+diff --git a/CAMBIOS_2.8.3.md b/CAMBIOS_2.8.3.md
+new file mode 100644
+index 0000000..73a6ede
+--- /dev/null
++++ b/CAMBIOS_2.8.3.md
+@@ -0,0 +1,19 @@
++# COCOTAXI 2.8.3 — reconstrucción oficial desde 2.7.1
++
++- Parte del commit 2.7.1 que compiló correctamente en GitHub Actions.
++- La oferta se lee primero desde un único recorrido del árbol de Accesibilidad; reconoce texto,
++  descripciones, IDs y etiquetas semánticas de Cabify. OCR completa solo campos compatibles.
++- El reloj En servicio comienza cuando Cabify muestra la asignación real, tanto si Coco aceptó la
++  oferta automáticamente como si el conductor la aceptó manualmente.
++- Finalizar abre un estado pendiente: el reloj se detiene solo con confirmación, pantalla completada
++  o retorno estable al mapa después de confirmar.
++- Si Cabify confirma que el pasajero o el conductor canceló el viaje, Coco detiene el reloj y elimina
++  completamente ese viaje del historial. El botón normal «Cancelar viaje» no provoca el borrado.
++- Pausar congela Conectado, En servicio y Sin viaje; reanudar continúa sin contar la pausa.
++- La duración estimada de la oferta no limita el tiempo real de En servicio.
++- Conserva promociones múltiples y solo aplica una condición de tasa de aceptación cuando Cabify la
++  muestra explícitamente o el conductor la configura.
++- Conserva zonas rojas/amarillas del mapa por visión y celdas, sin GPS ni permisos de ubicación.
++- Inicio incluye un diagnóstico seguro del árbol de Cabify sin guardar direcciones ni pasajeros.
++- Conserva licencia, PIN, sesiones, autoaceptación y base de datos de 2.7.1.
++- `versionName 2.8.3` / `versionCode 39`.
+diff --git a/app/build.gradle b/app/build.gradle
+index a3df5e6..d22df4d 100644
+--- a/app/build.gradle
++++ b/app/build.gradle
+@@ -10,8 +10,8 @@ android {
+         applicationId 'com.cocotaxi.app'
+         minSdk 26
+         targetSdk 36
+-        versionCode 35
+-        versionName '2.7.1'
++        versionCode 39
++        versionName '2.8.3'
+     }
+ 
+     compileOptions {
+diff --git a/app/src/main/java/com/cocotaxi/app/AssignmentSignals.java b/app/src/main/java/com/cocotaxi/app/AssignmentSignals.java
+index 68bdecf..5144b3a 100644
+--- a/app/src/main/java/com/cocotaxi/app/AssignmentSignals.java
++++ b/app/src/main/java/com/cocotaxi/app/AssignmentSignals.java
+@@ -12,7 +12,7 @@ public final class AssignmentSignals {
+     if (text == null) return false;
+     if (OfferParser.isHistoryNormalized(text)
+         || text.contains("aceptar")
+-        || text.contains("viaje cancelado")
++        || isCancelledNormalized(text)
+         || text.contains("otro conductor")
+         || text.contains("no se pudo aceptar")
+         || text.contains("error al aceptar")
+@@ -45,4 +45,92 @@ public final class AssignmentSignals {
+             || text.contains("ruta al destino");
+     return classic || pickup || service;
+   }
++
++  /** Stable Compose/test ids observed on Cabify's active journey screen. */
++  public static boolean isAssignedSemantic(String id) {
++    if (id == null) return false;
++    String value = semantic(id);
++    return (value.contains("jf_journey_screen") || value.contains("journey_screen"))
++        && !value.contains("journey_offer")
++        && !isCancellationSemantic(value)
++        && !isCompletionSemantic(value);
++  }
++
++  /** Terminal cancellation screens only; the ordinary "Cancelar viaje" action is not terminal. */
++  public static boolean isCancellationSemantic(String id) {
++    if (id == null) return false;
++    String value = semantic(id);
++    return value.contains("journey_cancelled")
++        || value.contains("journey_canceled")
++        || value.contains("cancelled_journey")
++        || value.contains("canceled_journey")
++        || value.contains("cancellation_success")
++        || value.contains("cancel_journey_success");
++  }
++
++  /**
++   * Detects a confirmed cancellation by the passenger or driver. Deliberately excludes the
++   * infinitive action "Cancelar viaje", which remains visible during a normal active journey.
++   */
++  public static boolean isCancelledNormalized(String text) {
++    if (text == null || OfferParser.isHistoryNormalized(text)) return false;
++    return text.contains("viaje cancelado")
++        || text.contains("viaje ha sido cancelado")
++        || text.contains("viaje fue cancelado")
++        || text.contains("has cancelado el viaje")
++        || text.contains("cancelaste el viaje")
++        || text.contains("cancelacion confirmada")
++        || text.contains("pasajero cancelo")
++        || text.contains("usuario cancelo")
++        || text.contains("cliente cancelo");
++  }
++
++  /** The confirmation button is distinct from the first Finish slider/button. */
++  public static boolean isFinishConfirmationSemantic(String id) {
++    if (id == null) return false;
++    String value = semantic(id);
++    return value.contains("finish_warning_dialog_finish_button")
++        || value.contains("finish_confirmation_confirm")
++        || value.contains("confirm_finish_journey")
++        || value.contains("confirm_end_journey");
++  }
++
++  /** Semantic screens that only appear once Cabify has completed the journey. */
++  public static boolean isCompletionSemantic(String id) {
++    if (id == null) return false;
++    String value = semantic(id);
++    return value.contains("journey_finished")
++        || value.contains("journey_completed")
++        || value.contains("completed_journey")
++        || value.contains("journey_summary")
++        || value.contains("rate_journey")
++        || value.contains("rating_screen");
++  }
++
++  public static boolean isCompletedNormalized(String text) {
++    if (text == null || OfferParser.isHistoryNormalized(text)) return false;
++    return text.contains("viaje finalizado")
++        || text.contains("viaje terminado")
++        || text.contains("viaje completado")
++        || text.contains("califica el viaje")
++        || text.contains("calificar viaje")
++        || text.contains("resumen del viaje");
++  }
++
++  /** Main-map evidence used only after the driver explicitly requested Finish. */
++  public static boolean isPostTripMapNormalized(String text) {
++    if (text == null || text.isEmpty()) return false;
++    return text.contains("buscar viajes")
++        || text.contains("estas conectado")
++        || text.contains("estas en linea")
++        || text.contains("viajes disponibles")
++        || text.contains("demanda alta")
++        || text.contains("demanda media");
++  }
++
++  private static String semantic(String raw) {
++    return OfferParser.normalize(raw)
++        .replaceAll("[^a-z0-9]+", "_")
++        .replaceAll("^_+|_+$", "");
++  }
+ }
+diff --git a/app/src/main/java/com/cocotaxi/app/CocoStore.java b/app/src/main/java/com/cocotaxi/app/CocoStore.java
+index 96df7bf..90ebd2b 100644
+--- a/app/src/main/java/com/cocotaxi/app/CocoStore.java
++++ b/app/src/main/java/com/cocotaxi/app/CocoStore.java
+@@ -163,9 +163,8 @@ public final class CocoStore extends SQLiteOpenHelper {
+     s.estimated = t.estimated;
+     s.earned = t.earned;
+     s.trips = t.trips;
+-    // Finalized/manual rides store their service duration. While an automatically detected ride
+-    // is assigned, En servicio grows live but never beyond the duration Coco captured from the
+-    // offer. Connected keeps its own real clock, so Sin viaje is simply Connected - En servicio.
++    // The duration shown in the offer is an estimate for the decision, never a cap for the real
++    // En servicio clock. Connected keeps its own clock; Sin viaje is Connected - En servicio.
+     s.service = Math.min(s.minutes, t.service + liveServiceMinutes(s.id));
+     s.pending = t.pending;
+     return s;
+@@ -176,16 +175,15 @@ public final class CocoStore extends SQLiteOpenHelper {
+     try (Cursor q =
+         getReadableDatabase()
+             .rawQuery(
+-                "SELECT accepted,planned FROM trips WHERE session=? AND deleted=0 AND status='ASIGNADO'"
+-                    + " AND accepted>0 ORDER BY at DESC LIMIT 1",
++                "SELECT accepted,minutes FROM trips WHERE session=? AND deleted=0 AND status='ASIGNADO'"
++                    + " ORDER BY at DESC LIMIT 1",
+                 new String[] {sessionId})) {
+       if (!q.moveToFirst()) return 0;
+       long accepted = q.getLong(0);
+-      double planned = q.getDouble(1);
++      double saved = Math.max(0, q.getDouble(1));
+       long now = SystemClock.elapsedRealtime();
+-      if (accepted <= 0 || now < accepted) return 0;
+-      double elapsed = (now - accepted) / 60000.0;
+-      return planned > 0 ? Math.min(elapsed, planned) : elapsed;
++      double elapsed = accepted > 0 && now >= accepted ? (now - accepted) / 60000.0 : 0;
++      return saved + elapsed;
+     }
+   }
+ 
+@@ -207,7 +205,12 @@ public final class CocoStore extends SQLiteOpenHelper {
+   public synchronized void pause() {
+     Session s = session();
+     if (!s.active) return;
+-    checkpointRemainder(s);
++    if (!s.paused) {
++      checkpointRemainder(s);
++      checkpointActiveService(s.id, false);
++    } else {
++      checkpointActiveService(s.id, true);
++    }
+     ContentValues v = new ContentValues();
+     v.put("paused", s.paused ? 0 : 1);
+     v.put("elapsed", SystemClock.elapsedRealtime());
+@@ -217,6 +220,31 @@ public final class CocoStore extends SQLiteOpenHelper {
+     touch();
+   }
+ 
++  /** Freeze/resume the live service stopwatch together with the session stopwatch. */
++  private void checkpointActiveService(String sessionId, boolean resume) {
++    if (sessionId == null || sessionId.isEmpty()) return;
++    SQLiteDatabase db = getWritableDatabase();
++    try (Cursor q =
++        db.rawQuery(
++            "SELECT id,accepted,minutes FROM trips WHERE session=? AND deleted=0"
++                + " AND status='ASIGNADO' ORDER BY at DESC LIMIT 1",
++            new String[] {sessionId})) {
++      if (!q.moveToFirst()) return;
++      String id = q.getString(0);
++      long accepted = q.getLong(1), now = SystemClock.elapsedRealtime();
++      double saved = Math.max(0, q.getDouble(2));
++      ContentValues values = new ContentValues();
++      if (resume) {
++        if (accepted <= 0) values.put("accepted", now);
++      } else {
++        double elapsed = accepted > 0 && now >= accepted ? (now - accepted) / 60000.0 : 0;
++        values.put("minutes", saved + elapsed);
++        values.put("accepted", 0);
++      }
++      if (values.size() > 0) db.update("trips", values, "id=?", new String[] {id});
++    }
++  }
++
+   private void checkpointRemainder(Session s) {
+     if (!s.active || s.paused) return;
+     SQLiteDatabase d = getWritableDatabase();
+@@ -376,18 +404,26 @@ public final class CocoStore extends SQLiteOpenHelper {
+ 
+   public synchronized void observeNormalized(String text) {
+     Session s = session();
+-    if (!s.active || s.paused) return;
++    if (!s.active) return;
+     Trip t = activeTrip();
+     if (t == null) return;
+     if (OfferParser.isHistoryNormalized(text)) return;
+-    if (text.contains("viaje cancelado")
+-        || text.contains("otro conductor")
++    if (AssignmentSignals.isCancelledNormalized(text)) {
++      cancelObserved(t.id);
++      return;
++    }
++    if (text.contains("otro conductor")
+         || text.contains("ya no esta disponible")
+         || text.contains("no se pudo aceptar")
+         || text.contains("error al aceptar")) {
+       status(t.id, "NO ASIGNADO");
+       return;
+     }
++    if (t.status.equals("ASIGNADO") && AssignmentSignals.isCompletedNormalized(text)) {
++      complete(t.id);
++      return;
++    }
++    if (s.paused) return;
+     if (t.status.equals("INTENTO")) {
+       if (System.currentTimeMillis() - t.at > 45000) {
+         status(t.id, "SIN CONFIRMAR");
+@@ -400,13 +436,16 @@ public final class CocoStore extends SQLiteOpenHelper {
+               || text.contains("iniciar viaje")
+               || text.contains("recoger al pasajero");
+       if (assigned && !text.contains("aceptar")) confirmAccepted(t.id);
+-    } else if (t.status.equals("ASIGNADO")
+-        && (text.contains("viaje finalizado")
+-            || text.contains("viaje terminado")
+-            || text.contains("viaje completado")
+-            || text.contains("califica el viaje")
+-            || text.contains("calificar viaje")
+-            || text.contains("resumen del viaje"))) complete(t.id);
++    }
++  }
++
++  /** A confirmed Cabify cancellation is removed completely so it cannot appear or count later. */
++  public synchronized boolean cancelObserved(String id) {
++    Trip t = find(id);
++    if (t == null || t.deleted) return false;
++    boolean removed = getWritableDatabase().delete("trips", "id=?", new String[] {id}) == 1;
++    if (removed) touch();
++    return removed;
+   }
+ 
+   /**
+@@ -420,8 +459,13 @@ public final class CocoStore extends SQLiteOpenHelper {
+     ContentValues v = new ContentValues();
+     v.put("status", "FINALIZADO");
+     v.put("at", System.currentTimeMillis());
+-    double elapsed = Math.max(0, (SystemClock.elapsedRealtime() - t.accepted) / 60000.0);
+-    v.put("minutes", t.planned > 0 ? Math.min(elapsed, t.planned) : elapsed);
++    double elapsed =
++        t.accepted > 0
++            ? Math.max(0, (SystemClock.elapsedRealtime() - t.accepted) / 60000.0)
++            : 0;
++    double total = Math.max(0, t.minutes) + elapsed;
++    v.put("minutes", total);
++    v.put("accepted", 0);
+     getWritableDatabase().update("trips", v, "id=? AND status='ASIGNADO'", new String[] {id});
+     touch();
+     return true;
+diff --git a/app/src/main/java/com/cocotaxi/app/CocotaxiAccessibilityService.java b/app/src/main/java/com/cocotaxi/app/CocotaxiAccessibilityService.java
+index acb242b..af77dc0 100644
+--- a/app/src/main/java/com/cocotaxi/app/CocotaxiAccessibilityService.java
++++ b/app/src/main/java/com/cocotaxi/app/CocotaxiAccessibilityService.java
+@@ -15,10 +15,12 @@ import java.util.concurrent.*;
+ public final class CocotaxiAccessibilityService extends AccessibilityService {
+   public static final String CABIFY = "com.cabify.driver";
+   public static CocotaxiAccessibilityService instance;
+-  public static String diagnostic = "Activa Accesibilidad para leer Cabify";
++  public static volatile String diagnostic = "Activa Accesibilidad para leer Cabify";
++  public static volatile String diagnosticDetail =
++      "Aún no se recibió un árbol accesible de Cabify.";
+   private final Handler handler = new Handler(Looper.getMainLooper());
+   private ScreenOcrEngine ocr;
+-  private final MapDemandVision zoneVision = new MapDemandVision();
++  private final SpatialDemandVision zoneVision = new SpatialDemandVision();
+   private volatile boolean processing;
+   private volatile boolean busy, destroyed;
+   private long inspectStartedNs, lastDispatchNs;
+@@ -35,6 +37,10 @@ public final class CocotaxiAccessibilityService extends AccessibilityService {
+   private long detailAt;
+   private boolean assignmentSeen;
+   private long assignmentWithoutOfferAt;
++  private long finishRequestedAt, finishMapSeenAt;
++  private String finishTripId = "";
++  private long cancelRequestedAt, cancelConfirmedAt, cancelMapSeenAt;
++  private String cancelTripId = "";
+ 
+   // Short-lived hot-path caches. Store revision invalidates them immediately after any session/trip mutation.
+   private CocoStore.Session cachedSession;
+@@ -128,6 +134,134 @@ public final class CocotaxiAccessibilityService extends AccessibilityService {
+     if (assigned || trip != null) CocotaxiOverlayService.clearOffer();
+   }
+ 
++  /**
++   * Finish has two Cabify steps. The first slider/button only opens a confirmation dialog, so the
++   * service clock must keep running until the confirm action or an unmistakable completed screen.
++   */
++  private boolean observeFinishState(
++      String normalized,
++      TextCollector.Snapshot tree,
++      boolean assigned,
++      CocoStore store,
++      CocoStore.Trip trip) {
++    if (trip == null || !"ASIGNADO".equals(trip.status)) {
++      finishRequestedAt = finishMapSeenAt = 0L;
++      finishTripId = "";
++      return false;
++    }
++
++    if (tree.completionSemantic || AssignmentSignals.isCompletedNormalized(normalized))
++      return completeObservedTrip(store, trip, "Viaje finalizado · servicio detenido");
++
++    long now = SystemClock.elapsedRealtime();
++    if (tree.finishConfirmSemantic && finishRequestedAt <= 0) {
++      finishRequestedAt = now;
++      finishTripId = trip.id;
++      diagnostic = "Confirma la finalización en Cabify · el reloj sigue activo";
++    }
++    if (finishRequestedAt <= 0 || !trip.id.equals(finishTripId)) return false;
++    if (now - finishRequestedAt > 45000L) {
++      finishRequestedAt = finishMapSeenAt = 0L;
++      finishTripId = "";
++      return false;
++    }
++
++    if (assigned || tree.journeySemantic || tree.finishConfirmSemantic) {
++      finishMapSeenAt = 0L;
++      if (tree.finishConfirmSemantic)
++        diagnostic = "Confirma la finalización en Cabify · el reloj sigue activo";
++      return false;
++    }
++
++    // Fallback for Cabify builds that hide the confirmation id and completion text. It is armed
++    // only by the driver's explicit Finish action and requires a stable return to Cabify's map.
++    boolean backOnMap =
++        AssignmentSignals.isPostTripMapNormalized(normalized)
++            || tree.offerSemantic
++            || OfferParser.isLikelyOfferNormalized(normalized);
++    if (!backOnMap) {
++      finishMapSeenAt = 0L;
++      return false;
++    }
++    if (finishMapSeenAt == 0L) finishMapSeenAt = now;
++    if (now - finishMapSeenAt < 800L) return false;
++    return completeObservedTrip(store, trip, "Viaje finalizado al volver al mapa · servicio detenido");
++  }
++
++  private boolean completeObservedTrip(CocoStore store, CocoStore.Trip trip, String message) {
++    boolean completed = trip != null && store.complete(trip.id);
++    if (completed) {
++      diagnostic = message;
++      cachedSessionAt = cachedTripAt = 0L;
++      assignmentSeen = false;
++      CocotaxiOverlayService.clearOffer();
++    }
++    finishRequestedAt = finishMapSeenAt = 0L;
++    finishTripId = "";
++    return completed;
++  }
++
++  /**
++   * Passenger and driver cancellations are terminal. The visible "Cancelar viaje" action only
++   * arms the fallback; Coco removes the record after Cabify confirms the cancellation or returns
++   * stably to its map after a confirmed cancel action.
++   */
++  private boolean observeCancellationState(
++      String normalized,
++      TextCollector.Snapshot tree,
++      boolean assigned,
++      CocoStore store,
++      CocoStore.Trip trip) {
++    if (trip == null || !("ASIGNADO".equals(trip.status) || "INTENTO".equals(trip.status))) {
++      resetCancellationState();
++      return false;
++    }
++    if (tree.cancellationSemantic || AssignmentSignals.isCancelledNormalized(normalized))
++      return cancelObservedTrip(store, trip, "Viaje cancelado · eliminado del historial");
++
++    long now = SystemClock.elapsedRealtime();
++    if (cancelConfirmedAt <= 0 || !trip.id.equals(cancelTripId)) return false;
++    if (now - cancelConfirmedAt > 45000L) {
++      resetCancellationState();
++      return false;
++    }
++    if (assigned || tree.journeySemantic) {
++      cancelMapSeenAt = 0L;
++      return false;
++    }
++    boolean backOnMap =
++        AssignmentSignals.isPostTripMapNormalized(normalized)
++            || tree.offerSemantic
++            || OfferParser.isLikelyOfferNormalized(normalized);
++    if (!backOnMap) {
++      cancelMapSeenAt = 0L;
++      return false;
++    }
++    if (cancelMapSeenAt == 0L) cancelMapSeenAt = now;
++    if (now - cancelMapSeenAt < 800L) return false;
++    return cancelObservedTrip(store, trip, "Cancelación confirmada · viaje eliminado");
++  }
++
++  private boolean cancelObservedTrip(CocoStore store, CocoStore.Trip trip, String message) {
++    boolean removed = trip != null && store.cancelObserved(trip.id);
++    if (removed) {
++      diagnostic = message;
++      cachedSessionAt = cachedTripAt = 0L;
++      assignmentSeen = false;
++      assignmentWithoutOfferAt = 0L;
++      finishRequestedAt = finishMapSeenAt = 0L;
++      finishTripId = "";
++      CocotaxiOverlayService.clearOffer();
++    }
++    resetCancellationState();
++    return removed;
++  }
++
++  private void resetCancellationState() {
++    cancelRequestedAt = cancelConfirmedAt = cancelMapSeenAt = 0L;
++    cancelTripId = "";
++  }
++
+   private int mapSignal = -1;
+   private long mapAt;
+   private final Runnable poll =
+@@ -153,16 +287,74 @@ public final class CocotaxiAccessibilityService extends AccessibilityService {
+     CharSequence pkg = event.getPackageName();
+     if (pkg != null && !CABIFY.contentEquals(pkg)) return;
+     if (event.getEventType() == AccessibilityEvent.TYPE_VIEW_CLICKED) {
+-      if (!finishClick(event)) manualClick(event);
++      if (!cancelClick(event) && !finishClick(event)) manualClick(event);
+     }
+     inspect(event);
+   }
+ 
++  private boolean cancelClick(AccessibilityEvent e) {
++    if (!CABIFY.contentEquals(e.getPackageName() == null ? "" : e.getPackageName())) return false;
++    AccessibilityNodeInfo n = e.getSource();
++    if (n == null) return false;
++    StringBuilder seen = new StringBuilder(), semantics = new StringBuilder();
++    try {
++      if (e.getText() != null)
++        for (CharSequence value : e.getText())
++          if (value != null) seen.append(' ').append(OfferParser.normalize(value.toString()));
++      for (int i = 0; i < 5 && n != null; i++) {
++        if (n.getText() != null)
++          seen.append(' ').append(OfferParser.normalize(n.getText().toString()));
++        if (n.getContentDescription() != null)
++          seen.append(' ').append(OfferParser.normalize(n.getContentDescription().toString()));
++        if (n.getViewIdResourceName() != null)
++          semantics.append(' ').append(OfferParser.normalize(n.getViewIdResourceName()));
++        AccessibilityNodeInfo parent = n.getParent();
++        n.recycle();
++        n = parent;
++      }
++      String text = OfferParser.normalize(seen.toString());
++      String ids = OfferParser.normalize(semantics.toString());
++      boolean cancel =
++          text.contains("cancelar viaje")
++              || text.contains("cancelar carrera")
++              || text.contains("confirmar cancelacion")
++              || (ids.contains("cancel") && ids.contains("journey"));
++      if (!cancel) return false;
++
++      CocoStore.Trip trip = CocoStore.get(this).activeTrip();
++      if (trip == null) return true;
++      long now = SystemClock.elapsedRealtime();
++      boolean explicitConfirmation =
++          text.contains("confirmar cancelacion")
++              || text.contains("si cancelar")
++              || text.contains("cancelar definitivamente")
++              || text.contains("confirmar y cancelar")
++              || (ids.contains("confirm") && ids.contains("cancel"));
++      boolean secondCancelStep =
++          cancelRequestedAt > 0
++              && trip.id.equals(cancelTripId)
++              && now - cancelRequestedAt >= 250L
++              && now - cancelRequestedAt <= 45000L;
++      cancelTripId = trip.id;
++      cancelMapSeenAt = 0L;
++      if (explicitConfirmation || secondCancelStep) {
++        cancelConfirmedAt = now;
++        diagnostic = "Cancelación enviada · esperando confirmación de Cabify";
++      } else {
++        cancelRequestedAt = now;
++        diagnostic = "Cancelación iniciada · el reloj sigue hasta que Cabify confirme";
++      }
++      return true;
++    } finally {
++      if (n != null) n.recycle();
++    }
++  }
++
+   private boolean finishClick(AccessibilityEvent e) {
+     if (!CABIFY.contentEquals(e.getPackageName() == null ? "" : e.getPackageName())) return false;
+     AccessibilityNodeInfo n = e.getSource();
+     if (n == null) return false;
+-    StringBuilder seen = new StringBuilder();
++    StringBuilder seen = new StringBuilder(), semantics = new StringBuilder();
+     try {
+       if (e.getText() != null)
+         for (CharSequence value : e.getText())
+@@ -172,6 +364,8 @@ public final class CocotaxiAccessibilityService extends AccessibilityService {
+           seen.append(' ').append(OfferParser.normalize(n.getText().toString()));
+         if (n.getContentDescription() != null)
+           seen.append(' ').append(OfferParser.normalize(n.getContentDescription().toString()));
++        if (n.getViewIdResourceName() != null)
++          semantics.append(' ').append(n.getViewIdResourceName());
+         // Some Cabify versions put the action label on the clickable parent rather than the leaf.
+         // Read only each ancestor's own label; never its whole subtree, otherwise tapping a map
+         // control could accidentally see a sibling "Finalizar" button and close the trip.
+@@ -180,8 +374,11 @@ public final class CocotaxiAccessibilityService extends AccessibilityService {
+         n = parent;
+       }
+       String text = OfferParser.normalize(seen.toString());
++      boolean confirmationSemantic =
++          AssignmentSignals.isFinishConfirmationSemantic(semantics.toString());
+       boolean finish =
+-          text.contains("finalizar viaje")
++          confirmationSemantic
++              || text.contains("finalizar viaje")
+               || text.contains("terminar viaje")
+               || text.contains("finalizar carrera")
+               || text.contains("terminar carrera")
+@@ -190,9 +387,19 @@ public final class CocotaxiAccessibilityService extends AccessibilityService {
+       if (!finish) return false;
+       CocoStore store = CocoStore.get(this);
+       CocoStore.Trip trip = store.activeTrip();
+-      if (trip != null && "ASIGNADO".equals(trip.status) && store.complete(trip.id)) {
+-        diagnostic = "Viaje finalizado · servicio detenido";
+-        CocotaxiOverlayService.clearOffer();
++      if (trip == null || !"ASIGNADO".equals(trip.status)) return true;
++      boolean confirmed =
++          confirmationSemantic
++              || text.contains("confirmar finalizacion")
++              || text.contains("confirmar fin del viaje")
++              || text.contains("si finalizar");
++      if (confirmed) {
++        completeObservedTrip(store, trip, "Viaje finalizado · servicio detenido");
++      } else {
++        finishRequestedAt = SystemClock.elapsedRealtime();
++        finishMapSeenAt = 0L;
++        finishTripId = trip.id;
++        diagnostic = "Finalización solicitada · esperando confirmación de Cabify";
+       }
+       return true;
+     } finally {
+@@ -210,7 +417,14 @@ public final class CocotaxiAccessibilityService extends AccessibilityService {
+           OfferParser.normalize(
+                   String.valueOf(n.getText() == null ? n.getContentDescription() : n.getText()))
+               .trim();
+-      if (!label.startsWith("aceptar")) return;
++      String semantic = n.getViewIdResourceName() == null ? "" : n.getViewIdResourceName();
++      String semanticNormalized =
++          OfferParser.normalize(semantic).replaceAll("[^a-z0-9]+", "_");
++      boolean semanticAccept =
++          semanticNormalized.contains("accept_offer")
++              || (semanticNormalized.contains("journey_offer")
++                  && semanticNormalized.contains("accept"));
++      if (!label.startsWith("aceptar") && !semanticAccept) return;
+       for (int i = 0; i < 8 && n != null; i++) {
+         Offer o = OfferParser.parse(TextCollector.collect(n), CABIFY);
+         annotateOffer(o);
+@@ -222,8 +436,7 @@ public final class CocotaxiAccessibilityService extends AccessibilityService {
+                   o, v, store.session(), demand(v), store.calibrationForOffer(o.kind, v), PromotionStore.get(this));
+           String id = store.attempt(o, r, false);
+           if (id != null) {
+-            store.confirmAccepted(id);
+-            diagnostic = "Viaje confirmado · en servicio";
++            diagnostic = "Aceptación enviada · esperando asignación de Cabify";
+           }
+           return;
+         }
+@@ -259,8 +472,7 @@ public final class CocotaxiAccessibilityService extends AccessibilityService {
+                 PromotionStore.get(this));
+         String id = store.attempt(candidate, r, false);
+         if (id != null) {
+-          store.confirmAccepted(id);
+-          diagnostic = "Viaje confirmado · en servicio";
++          diagnostic = "Aceptación enviada · esperando asignación de Cabify";
+         }
+       }
+     } finally {
+@@ -380,7 +592,7 @@ public final class CocotaxiAccessibilityService extends AccessibilityService {
+ 
+       CocoStore store = CocoStore.get(this);
+       CocoStore.Session session = sessionSnapshot(store, false);
+-      if (!session.active || session.paused) {
++      if (!session.active) {
+         CocotaxiOverlayService.clearOffer();
+         return;
+       }
+@@ -388,9 +600,25 @@ public final class CocotaxiAccessibilityService extends AccessibilityService {
+       try (TextCollector.Snapshot tree = TextCollector.snapshot(root)) {
+         String text = tree.text;
+         String normalized = OfferParser.normalize(text);
+-        boolean assigned = AssignmentSignals.isAssignedNormalized(normalized);
++        diagnosticDetail = treeDiagnostic(tree, normalized, "Árbol accesible", -1);
++        if ((normalized.contains("tasa de aceptacion") || normalized.matches("(?s).*\\bta\\b.*"))
++            && PromotionStore.observeCabifyText(this, normalized)) {
++          cachedPromoAt = 0L;
++          diagnostic = "Requisito TA leído de la promoción";
++        }
++        boolean assigned =
++            AssignmentSignals.isAssignedNormalized(normalized) || tree.journeySemantic;
+         CocoStore.Trip trip = tripSnapshot(store, session);
++        if (observeCancellationState(normalized, tree, assigned, store, trip)) return;
++        if (observeFinishState(normalized, tree, assigned, store, trip)) return;
++        if (session.paused) {
++          CocotaxiOverlayService.clearOffer();
++          if (trip != null && Build.VERSION.SDK_INT >= 30) requestScreenshot(root.getWindowId());
++          return;
++        }
+         observeAssignment(normalized, assigned, store, session, trip);
++        if (assigned && trip != null && tree.journeySemantic && finishRequestedAt <= 0)
++          diagnostic = "Viaje activo detectado por semántica · reloj en servicio";
+ 
+         if (assigned || OfferParser.isHistoryNormalized(normalized)) {
+           CocotaxiOverlayService.clearOffer();
+@@ -435,7 +663,15 @@ public final class CocotaxiAccessibilityService extends AccessibilityService {
+             handleOffers(root, tree, single, fused, false, true, session, fused);
+             if ((direct.pickupArea.isEmpty() || direct.destinationArea.isEmpty())
+                 && Build.VERSION.SDK_INT >= 30) requestScreenshot(root.getWindowId());
+-            diagnostic = fused ? "Oferta confirmada por Accessibility + OCR" : "Oferta detectada al instante";
++            diagnostic =
++                fused
++                    ? "Oferta confirmada por Accesibilidad + OCR"
++                    : tree.offerSemantic
++                        ? "Oferta detectada por semántica de Cabify"
++                        : "Oferta detectada por Accesibilidad";
++            diagnosticDetail =
++                treeDiagnostic(
++                    tree, normalized, fused ? "Accesibilidad + OCR" : "Árbol accesible", 1);
+             return;
+           }
+           if (recentOcrOffer != null && SystemClock.elapsedRealtime() - recentOcrAt <= 5000) {
+@@ -444,6 +680,7 @@ public final class CocotaxiAccessibilityService extends AccessibilityService {
+             rememberDetail(single, true);
+             handleOffers(root, tree, single, true, false, true, session, true);
+             diagnostic = "Oferta OCR + botón accesible";
++            diagnosticDetail = treeDiagnostic(tree, normalized, "OCR + árbol accesible", 1);
+             return;
+           }
+         }
+@@ -464,11 +701,23 @@ public final class CocotaxiAccessibilityService extends AccessibilityService {
+           previousAt = SystemClock.elapsedRealtime();
+           handleOffers(root, tree, cards, false, list, hasAccept, session, false);
+           diagnostic = "Leyendo " + cards.size() + " ofertas visibles";
++          diagnosticDetail = treeDiagnostic(tree, normalized, "Árbol accesible", cards.size());
+         } else {
+           CocotaxiOverlayService.clearOffer();
+           stableKey = "";
+-          if (Build.VERSION.SDK_INT >= 30) requestScreenshot(root.getWindowId());
++          if (Build.VERSION.SDK_INT >= 30) {
++            if (recentOcrOffer != null
++                && SystemClock.elapsedRealtime() - recentOcrAt <= 5000L)
++              diagnostic = "Oferta detectada por OCR reciente";
++            else
++              diagnostic =
++                  tree.offerSemantic
++                      ? "Oferta señalada por Cabify · completando importe y tiempos por OCR"
++                      : "Pantalla Cabify visible · buscando oferta por OCR";
++            requestScreenshot(root.getWindowId());
++          }
+           else if (!assigned) diagnostic = "Texto no disponible: activa Captura de respaldo";
++          diagnosticDetail = treeDiagnostic(tree, normalized, "Árbol accesible incompleto", 0);
+         }
+       }
+     } finally {
+@@ -480,12 +729,38 @@ public final class CocotaxiAccessibilityService extends AccessibilityService {
+     zoneVision.annotate(offer, System.currentTimeMillis());
+   }
+ 
++  private static String treeDiagnostic(
++      TextCollector.Snapshot tree, String normalized, String source, int offers) {
++    StringBuilder out = new StringBuilder();
++    out.append(source)
++        .append(" · nodos ").append(tree.nodeCount)
++        .append(" · textos ").append(tree.textEntries)
++        .append(" · Aceptar ").append(tree.acceptCount);
++    if (offers >= 0) out.append(" · ofertas ").append(offers);
++    out.append("\nSeñales: oferta=").append(tree.offerSemantic ? "sí" : "no")
++        .append(" · viaje=").append(tree.journeySemantic ? "sí" : "no")
++        .append(" · confirmar fin=").append(tree.finishConfirmSemantic ? "sí" : "no")
++        .append(" · completado=").append(tree.completionSemantic ? "sí" : "no")
++        .append(" · cancelado=").append(tree.cancellationSemantic ? "sí" : "no")
++        .append(" · texto oferta=")
++        .append(OfferParser.isLikelyOfferNormalized(normalized) ? "sí" : "no");
++    out.append("\nIDs semánticos: ")
++        .append(tree.semanticTrace.isEmpty() ? "ninguno publicado" : tree.semanticTrace);
++    return out.toString();
++  }
++
+   private void annotateOffers(List<Offer> offers) {
+     if (offers == null) return;
+     long now = System.currentTimeMillis();
+     for (Offer offer : offers) zoneVision.annotate(offer, now);
+   }
+ 
++  private void annotateOffers(
++      List<Offer> offers, Bitmap bitmap, ScreenOcrEngine.Frame frame, long now) {
++    if (offers == null) return;
++    for (Offer offer : offers) zoneVision.annotate(offer, bitmap, frame, now);
++  }
++
+   private DecisionEngine.Result best(
+       List<Offer> cards, SettingsStore.Values v, CocoStore.Session s, int demand,
+       PromotionStore.Snapshot promo) {
+@@ -584,8 +859,10 @@ public final class CocotaxiAccessibilityService extends AccessibilityService {
+     String id = store.attempt(r.offer, r, true);
+     if (clicked) {
+       attemptedKeys.put(r.offer.key, now);
+-      if (id != null) store.confirmAccepted(id);
+-      diagnostic = "Viaje confirmado · en servicio";
++      diagnostic =
++          id == null
++              ? "Aceptación enviada · esperando estado de Cabify"
++              : "Aceptación enviada · esperando asignación de Cabify";
+     } else {
+       if (id != null) store.status(id, "SIN BOTÓN ACCESIBLE");
+       diagnostic = "Acepta manualmente: botón no accesible";
+@@ -680,11 +957,23 @@ public final class CocotaxiAccessibilityService extends AccessibilityService {
+               CocoStore.Session s = sessionSnapshot(store, false);
+               if (!destroyed
+                   && s.active
+-                  && !s.paused
+                   && s.id.equals(captureSession)
+                   && cabifyForeground()) {
+                 String text = frame.text;
+                 String normalized = OfferParser.normalize(text);
++                diagnosticDetail =
++                    "OCR de respaldo · líneas "
++                        + frame.lines.size()
++                        + " · texto visible "
++                        + normalized.length()
++                        + " caracteres\nNo se guardan direcciones ni datos del pasajero.";
++                if ((normalized.contains("tasa de aceptacion")
++                        || normalized.matches("(?s).*\\bta\\b.*"))
++                    && PromotionStore.observeCabifyText(
++                        CocotaxiAccessibilityService.this, normalized)) {
++                  cachedPromoAt = 0L;
++                  diagnostic = "Requisito TA leído por OCR";
++                }
+                 SettingsStore.Values settings =
+                     SettingsStore.load(CocotaxiAccessibilityService.this);
+ 
+@@ -700,6 +989,18 @@ public final class CocotaxiAccessibilityService extends AccessibilityService {
+ 
+                 boolean assigned = AssignmentSignals.isAssignedNormalized(normalized);
+                 CocoStore.Trip trip = tripSnapshot(store, s);
++                if (trip != null && AssignmentSignals.isCancelledNormalized(normalized)) {
++                  if (cancelObservedTrip(
++                      store, trip, "Viaje cancelado detectado por OCR · eliminado")) return;
++                }
++                if (trip != null && AssignmentSignals.isCompletedNormalized(normalized)) {
++                  if (completeObservedTrip(
++                      store, trip, "Viaje finalizado por OCR · servicio detenido")) return;
++                }
++                if (s.paused) {
++                  CocotaxiOverlayService.clearOffer();
++                  return;
++                }
+                 observeAssignment(normalized, assigned, store, s, trip);
+                 if (assigned || trip != null) {
+                   CocotaxiOverlayService.clearOffer();
+@@ -708,7 +1009,7 @@ public final class CocotaxiAccessibilityService extends AccessibilityService {
+ 
+                 List<Offer> cards = OfferParser.parseVisibleNormalized(normalized);
+                 if (!cards.isEmpty()) {
+-                  annotateOffers(cards);
++                  annotateOffers(cards, bitmap, frame, System.currentTimeMillis());
+                   if (cards.size() == 1) {
+                     Offer candidate = cards.get(0);
+                     // If Accessibility already saw the same card, fuse both readings instead of
+@@ -717,7 +1018,7 @@ public final class CocotaxiAccessibilityService extends AccessibilityService {
+                         && s.id.equals(detailSession)
+                         && SystemClock.elapsedRealtime() - detailAt <= 5000)
+                       candidate = OfferParser.merge(candidate, recentDetail);
+-                    annotateOffer(candidate);
++                    zoneVision.annotate(candidate, bitmap, frame, System.currentTimeMillis());
+                     cards = Collections.singletonList(candidate);
+                     recentOcrOffer = candidate;
+                     recentOcrAt = SystemClock.elapsedRealtime();
+@@ -735,6 +1036,12 @@ public final class CocotaxiAccessibilityService extends AccessibilityService {
+                     CocotaxiOverlayService.update(
+                         result, cards.indexOf(result.offer) + 1, cards.size(), demand, true);
+                   diagnostic = "OCR verificado: " + cards.size() + " ofertas";
++                  diagnosticDetail =
++                      "OCR verificado · ofertas "
++                          + cards.size()
++                          + " · líneas "
++                          + frame.lines.size()
++                          + "\nCampos compatibles fusionados sin mezclar ofertas distintas.";
+                 }
+               }
+             } finally {
+diff --git a/app/src/main/java/com/cocotaxi/app/DecisionEngine.java b/app/src/main/java/com/cocotaxi/app/DecisionEngine.java
+index a2bcca6..eab2037 100644
+--- a/app/src/main/java/com/cocotaxi/app/DecisionEngine.java
++++ b/app/src/main/java/com/cocotaxi/app/DecisionEngine.java
+@@ -120,6 +120,13 @@ public final class DecisionEngine {
+               : java.util.Collections.singletonList(promo);
+       for (PromotionStore.Snapshot one : candidates) {
+         if (one == null || !one.active()) continue;
++        if (one.acceptanceRequired && !one.acceptanceAllowsCredit(one.now)) {
++          // A TA condition affects this promotion only because Cabify displayed it explicitly.
++          // When current eligibility is unknown/stale, the safest calculation is the base trip:
++          // never invent the bonus and never add a generic TA penalty to future offers.
++          r.promoTaUnverified = true;
++          continue;
++        }
+         PromotionMath.Plan plan =
+             PromotionMath.plan(
+                 one.target,
+@@ -140,6 +147,7 @@ public final class DecisionEngine {
+           r.promoCredit = plan.credit;
+           r.promoRequiredCycle = plan.requiredCycle;
+           r.promoMargin = plan.margin;
++          r.promoTaRequired = one.acceptanceRequired;
+           r.score = plan.hourly;
+           r.accept = true;
+         }
+@@ -163,12 +171,16 @@ public final class DecisionEngine {
+                 ? "Cumple el objetivo de sesión"
+                 : "Cumple filtro; sesión aún bajo meta";
+       }
++      if (!r.promoFeasible && r.promoTaUnverified)
++        r.reason += " · bono TA no contado hasta verificar elegibilidad";
+     } else {
+       r.reason = "No alcanza el filtro de esta demanda";
+       if (r.zonePenalty > 0)
+         r.reason += " · destino fuera de zona caliente ( +" + fmt(r.zonePenalty) + " min )";
+       if (promoActive && !r.promoFeasible)
+         r.reason += " · la promo no mejora esta oferta o ya no es alcanzable";
++      if (r.promoTaUnverified)
++        r.reason += " · TA exigida sin elegibilidad verificada";
+     }
+     if (r.provisional) r.reason += " · estimación inicial Ayeryhoy";
+     return r;
+@@ -218,7 +230,7 @@ public final class DecisionEngine {
+ 
+   public static final class Result {
+     public Offer offer;
+-    public boolean accept, calibrated, provisional, promoFeasible;
++    public boolean accept, calibrated, provisional, promoFeasible, promoTaRequired, promoTaUnverified;
+     public double score, promoCredit, neededHourly, promoRequiredCycle, promoMargin;
+     public int originHeat = -1, destinationHeat = -1;
+     public String reason = "Sin oferta";
+diff --git a/app/src/main/java/com/cocotaxi/app/MainActivity.java b/app/src/main/java/com/cocotaxi/app/MainActivity.java
+index cc9fa59..2a04f6e 100644
+--- a/app/src/main/java/com/cocotaxi/app/MainActivity.java
++++ b/app/src/main/java/com/cocotaxi/app/MainActivity.java
+@@ -55,6 +55,7 @@ public final class MainActivity extends Activity {
+   private boolean permissionDialog, permissionDeferred;
+   private boolean compactUi;
+   private boolean pinUnlocked;
++  private boolean startupFailed;
+   private LicenseManager licenseManager;
+   private LinearLayout body;
+   private SettingsStore.Values draft;
+@@ -67,48 +68,130 @@ public final class MainActivity extends Activity {
+   private final Runnable tick =
+       new Runnable() {
+         public void run() {
+-          for (Runnable r : new ArrayList<>(refreshers)) r.run();
++          for (Runnable r : new ArrayList<>(refreshers)) {
++            try {
++              r.run();
++            } catch (Throwable error) {
++              recordUiFailure("actualización", error);
++            }
++          }
+           // The dashboard contains live idle/service clocks; refresh once a second so they feel
+           // like real timers instead of rounded session totals.
+-          handler.postDelayed(this, 1000);
++          if (!startupFailed) handler.postDelayed(this, 1000);
+         }
+       };
+ 
+   @Override
+   public void onCreate(Bundle state) {
+     super.onCreate(state);
+-    LegacyImport.run(this);
+-    licenseManager = LicenseManager.get(this);
+-    refreshLicense(false);
+-    pinUnlocked = !PinStore.enabled(this) || (state != null && state.getBoolean("pinUnlocked"));
+-    if (state != null) {
+-      tab = state.getInt("tab");
+-      advanced = state.getBoolean("advanced");
+-      profileView = state.getBoolean("profileView");
+-      settingsDirty = state.getBoolean("settingsDirty");
+-      draft = (SettingsStore.Values) state.getSerializable("values");
+-      selectedSession = state.getString("selected", "");
+-      Bundle b = state.getBundle("draft");
+-      if (b != null) for (String k : b.keySet()) draftText.put(k, b.getString(k));
++    try {
++      LegacyImport.run(this);
++      licenseManager = LicenseManager.get(this);
++      refreshLicense(false);
++      pinUnlocked = !PinStore.enabled(this) || (state != null && state.getBoolean("pinUnlocked"));
++      if (state != null) {
++        tab = state.getInt("tab");
++        advanced = state.getBoolean("advanced");
++        profileView = state.getBoolean("profileView");
++        settingsDirty = state.getBoolean("settingsDirty");
++        draft = (SettingsStore.Values) state.getSerializable("values");
++        selectedSession = state.getString("selected", "");
++        Bundle b = state.getBundle("draft");
++        if (b != null) for (String k : b.keySet()) draftText.put(k, b.getString(k));
++      }
++      if (pinUnlocked) render();
++      else showPinGate();
++    } catch (Throwable error) {
++      showStartupFailure(error);
+     }
+-    if (pinUnlocked) render();
+-    else showPinGate();
+   }
+ 
+   @Override
+   public void onResume() {
+     super.onResume();
+     foreground = new java.lang.ref.WeakReference<>(this);
+-    if (!pinUnlocked) {
+-      showPinGate();
+-      return;
++    if (startupFailed) return;
++    try {
++      if (!pinUnlocked) {
++        showPinGate();
++        return;
++      }
++      if (tab != 3) render();
++      handler.removeCallbacks(tick);
++      handler.post(tick);
++      handler.post(this::safeCheckPermissions);
++      if (CocoStore.get(this).session().active && Settings.canDrawOverlays(this))
++        startForegroundService(new Intent(this, CocotaxiOverlayService.class));
++    } catch (Throwable error) {
++      showStartupFailure(error);
++    }
++  }
++
++  private void safeCheckPermissions() {
++    try {
++      checkPermissions();
++    } catch (Throwable error) {
++      recordUiFailure("permisos", error);
+     }
+-    if (tab != 3) render();
+-    handler.removeCallbacks(tick);
+-    handler.post(tick);
+-    handler.post(this::checkPermissions);
+-    if (CocoStore.get(this).session().active && Settings.canDrawOverlays(this))
+-      startForegroundService(new Intent(this, CocotaxiOverlayService.class));
++  }
++
++  private void recordUiFailure(String stage, Throwable error) {
++    String detail = shortError(error);
++    getSharedPreferences("coco_startup_diagnostics", 0)
++        .edit()
++        .putString("last_error", stage + ": " + detail)
++        .putLong("last_error_at", System.currentTimeMillis())
++        .apply();
++    CocotaxiAccessibilityService.diagnostic = "Diagnóstico Coco · " + detail;
++  }
++
++  private String shortError(Throwable error) {
++    if (error == null) return "error desconocido";
++    String name = error.getClass().getSimpleName();
++    StackTraceElement[] trace = error.getStackTrace();
++    if (trace.length == 0) return name;
++    StackTraceElement first = trace[0];
++    return name + " en " + first.getClassName().replace("com.cocotaxi.app.", "")
++        + "." + first.getMethodName() + ":" + first.getLineNumber();
++  }
++
++  /** Keep the app open and expose a compact diagnostic instead of entering a crash loop. */
++  private void showStartupFailure(Throwable error) {
++    startupFailed = true;
++    handler.removeCallbacksAndMessages(null);
++    recordUiFailure("inicio", error);
++    String detail = shortError(error);
++
++    LinearLayout root = new LinearLayout(this);
++    root.setOrientation(LinearLayout.VERTICAL);
++    root.setGravity(Gravity.CENTER);
++    root.setPadding(dp(24), dp(24), dp(24), dp(24));
++    root.setBackgroundColor(BG);
++    TextView title = new TextView(this);
++    title.setText("COCOTAXI · ARRANQUE SEGURO");
++    title.setTextColor(WHITE);
++    title.setTextSize(20);
++    title.setTypeface(null, Typeface.BOLD);
++    title.setGravity(Gravity.CENTER);
++    root.addView(title, new LinearLayout.LayoutParams(-1, -2));
++    TextView message = new TextView(this);
++    message.setText(
++        "Coco evitó un cierre inesperado. Haz una captura de este código y envíamela:\n\n"
++            + detail);
++    message.setTextColor(YELLOW);
++    message.setTextSize(14);
++    message.setGravity(Gravity.CENTER);
++    message.setPadding(0, dp(18), 0, dp(18));
++    root.addView(message, new LinearLayout.LayoutParams(-1, -2));
++    Button retry = new Button(this);
++    retry.setText("Reintentar abrir");
++    retry.setOnClickListener(
++        v -> {
++          startupFailed = false;
++          recreate();
++        });
++    root.addView(retry, new LinearLayout.LayoutParams(-1, -2));
++    setContentView(root);
+   }
+ 
+   @Override
+@@ -480,7 +563,7 @@ public final class MainActivity extends Activity {
+       render();
+       handler.removeCallbacks(tick);
+       handler.post(tick);
+-      handler.post(this::checkPermissions);
++      handler.post(this::safeCheckPermissions);
+       return;
+     }
+     long after = PinStore.secondsLocked(this);
+@@ -704,6 +787,12 @@ public final class MainActivity extends Activity {
+         GREEN);
+     metric(sr, "OBJETIVO", Money.format(v.realGoalHour) + "/h", WHITE);
+     status.addView(sr);
++    TextView cabifyState = text("", compactUi ? 10 : 11.5f, YELLOW);
++    cabifyState.setMaxLines(2);
++    cabifyState.setPadding(dp(4), dp(4), dp(4), 0);
++    cabifyState.setContentDescription("Ver diagnóstico del árbol de Cabify");
++    cabifyState.setOnClickListener(view -> showCabifyDiagnostic());
++    status.addView(cabifyState);
+     LinearLayout main = card(body, "OBJETIVO ACTUAL", LineIconView.CHART);
+     LinearLayout r = row();
+     LinearLayout left = col();
+@@ -785,6 +874,14 @@ public final class MainActivity extends Activity {
+                 duration(Math.max(0, live.minutes - live.service)),
+                 duration(live.service)
+               });
++          String readState = CocotaxiAccessibilityService.diagnostic;
++          cabifyState.setText(
++              "LECTURA CABIFY · "
++                  + (readState == null || readState.trim().isEmpty()
++                      ? "sin diagnóstico"
++                      : readState)
++                  + " · toca para ver árbol");
++          cabifyState.setTextColor(live.pending > 0 ? GREEN : YELLOW);
+           double needed = PromotionMath.requiredHourly(v.dailyGoal, v.targetHoursDay, live.minutes, live.money);
+           pace.setText(live.minutes >= v.targetHoursDay*60
+               ? "Tiempo previsto agotado · faltan " + Money.format(Math.max(0,v.dailyGoal-live.money))
+@@ -793,6 +890,31 @@ public final class MainActivity extends Activity {
+         });
+   }
+ 
++  private void showCabifyDiagnostic() {
++    String summary = CocotaxiAccessibilityService.diagnostic;
++    String detail = CocotaxiAccessibilityService.diagnosticDetail;
++    String report =
++        "Estado: "
++            + (summary == null ? "sin diagnóstico" : summary)
++            + "\n\n"
++            + (detail == null ? "Sin lectura del árbol." : detail);
++    new AlertDialog.Builder(this)
++        .setTitle("Diagnóstico Cabify")
++        .setMessage(report)
++        .setPositiveButton(
++            "Copiar",
++            (dialog, which) -> {
++              ClipboardManager clipboard =
++                  (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
++              if (clipboard != null) {
++                clipboard.setPrimaryClip(ClipData.newPlainText("Diagnóstico COCOTAXI", report));
++                toast("Diagnóstico copiado");
++              }
++            })
++        .setNegativeButton("Cerrar", null)
++        .show();
++  }
++
+   private void startOverlay() {
+     if (Build.VERSION.SDK_INT >= 33
+         && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+@@ -839,7 +961,7 @@ public final class MainActivity extends Activity {
+     LinearLayout head = card(body, "SESIÓN Y VIAJES", LineIconView.CLOCK);
+     head.addView(
+         text(
+-            "Coco confirma el viaje al aceptarlo. Puedes quitar esa confirmación desde Gestionar.",
++            "Coco inicia En servicio cuando Cabify confirma la asignación. Los viajes cancelados se eliminan automáticamente.",
+             compactUi ? 10.5f : 12,
+             MUTED));
+     LinearLayout topActions = row();
+@@ -1216,6 +1338,26 @@ public final class MainActivity extends Activity {
+     EditText bonus = field(c, "Premio anunciado (UYU)", decimal(editing ? old.bonus : 1100));
+     EditText target = field(c, "Total de viajes exigidos", String.valueOf(editing ? old.target : 13));
+     EditText done = field(c, "Viajes válidos ya completados", String.valueOf(editing ? old.completed : 0));
++    EditText taTarget =
++        field(
++            c,
++            "TA mínima mostrada por Cabify (0 = no exige)",
++            decimal(editing && old.acceptanceRequired ? old.acceptanceTarget : 0));
++    EditText taCurrent =
++        field(
++            c,
++            "TA actual mostrada (0 = desconocida)",
++            decimal(editing && old.acceptanceCurrent > 0 ? old.acceptanceCurrent : 0));
++    EditText taOffered =
++        field(
++            c,
++            "Ofertas recibidas mostradas (0 = desconocido)",
++            String.valueOf(editing && old.offeredJourneys >= 0 ? old.offeredJourneys : 0));
++    EditText taAccepted =
++        field(
++            c,
++            "Ofertas aceptadas mostradas (0 = desconocido)",
++            String.valueOf(editing && old.acceptedJourneys >= 0 ? old.acceptedJourneys : 0));
+     EditText start =
+         field(
+             c,
+@@ -1252,7 +1394,7 @@ public final class MainActivity extends Activity {
+         text(
+             editing && old.samples >= 3
+                 ? "Ritmo observado: " + decimal(old.cycle) + " min por viaje, incluyendo esperas"
+-                : "Cada promoción se calcula de forma independiente; el premio nunca se suma antes de cobrarlo.",
++                : "TA solo se usa si Cabify la muestra como requisito. Si no la exige, deja TA mínima en 0.",
+             12,
+             MUTED));
+     dialog(
+@@ -1273,9 +1415,27 @@ public final class MainActivity extends Activity {
+                   .atZone(CocoStore.ZONE)
+                   .toInstant()
+                   .toEpochMilli();
+-          if (editing)
++          double taMin = number(taTarget), taNow = number(taCurrent);
++          double taSeenValue = number(taOffered), taYesValue = number(taAccepted);
++          if (taSeenValue != (int) taSeenValue || taYesValue != (int) taYesValue)
++            throw new IllegalArgumentException("Los conteos de TA deben ser enteros");
++          int taSeen = (int) taSeenValue, taYes = (int) taYesValue;
++          if (taMin < 0 || taMin > 100 || taNow < 0 || taNow > 100 || taYes > taSeen)
++            throw new IllegalArgumentException("Revisa la TA y los conteos mostrados");
++          String promoId;
++          if (editing) {
+             PromotionStore.update(this, old.id, (int) n, number(bonus), a, b, (int) d);
+-          else PromotionStore.add(this, (int) n, number(bonus), a, b, (int) d);
++            promoId = old.id;
++          } else {
++            promoId = PromotionStore.add(this, (int) n, number(bonus), a, b, (int) d);
++          }
++          PromotionStore.setAcceptanceRequirement(
++              this,
++              promoId,
++              taMin,
++              taNow,
++              taSeen > 0 ? taSeen : -1,
++              taSeen > 0 || taYes > 0 ? taYes : -1);
+         });
+   }
+ 
+diff --git a/app/src/main/java/com/cocotaxi/app/PromotionRequirementParser.java b/app/src/main/java/com/cocotaxi/app/PromotionRequirementParser.java
+new file mode 100644
+index 0000000..c7738df
+--- /dev/null
++++ b/app/src/main/java/com/cocotaxi/app/PromotionRequirementParser.java
+@@ -0,0 +1,107 @@
++package com.cocotaxi.app;
++
++import java.util.regex.Matcher;
++import java.util.regex.Pattern;
++
++/** Reads only explicit acceptance-rate requirements shown in a Cabify promotion screen. */
++public final class PromotionRequirementParser {
++  private static final String NUMBER = "(?<rate>[0-9]{1,3}(?:[.,][0-9]+)?)";
++  private static final Pattern TARGET_AFTER_LABEL =
++      Pattern.compile(
++          "(?:ta|tasa(?: de)? aceptacion)[^%\\n]{0,45}?(?:min(?:ima|imo)?|objetivo|meta|requerid[ao])[^0-9%\\n]{0,20}"
++              + NUMBER
++              + "\\s*%");
++  private static final Pattern TARGET_BEFORE_RATE =
++      Pattern.compile(
++          "(?:min(?:ima|imo)?|objetivo|meta|requerid[ao])[^0-9%\\n]{0,24}"
++              + NUMBER
++              + "\\s*%[^\\n]{0,35}(?:ta|tasa(?: de)? aceptacion)");
++  private static final Pattern TARGET_STANDALONE =
++      Pattern.compile(
++          "(?m)^(?:min(?:ima|imo)?|objetivo|meta|requerid[ao])[^0-9%\\n]{0,24}"
++              + NUMBER
++              + "\\s*%");
++  private static final Pattern CURRENT =
++      Pattern.compile(
++          "(?:tu\\s+(?:ta|tasa(?: de)? aceptacion)|(?:ta|tasa(?: de)? aceptacion)\\s+actual)[^0-9%\\n]{0,24}"
++              + NUMBER
++              + "\\s*%");
++  private static final Pattern CURRENT_PREFIX =
++      Pattern.compile("(?:actual|actualmente)[^%\\n]{0,45}" + NUMBER + "\\s*%");
++  private static final Pattern CURRENT_BLOCK =
++      Pattern.compile(
++          "(?:tu\\s+(?:ta|tasa(?: de)? aceptacion)(?:\\s+actual)?|actualmente)[^%]{0,60}?"
++              + NUMBER
++              + "\\s*%");
++  private static final Pattern OFFERED =
++      Pattern.compile("(?:viajes|ofertas)\\s+(?:recibidos|recibidas|ofrecidos|ofrecidas)\\D{0,12}([0-9]{1,4})");
++  private static final Pattern ACCEPTED =
++      Pattern.compile("(?:viajes|ofertas)\\s+(?:aceptados|aceptadas)\\D{0,12}([0-9]{1,4})");
++  private static final Pattern TRIP_TARGET =
++      Pattern.compile("(?:meta|objetivo)?\\s*([0-9]{1,3})\\s+viajes\\b");
++
++  private PromotionRequirementParser() {}
++
++  public static Requirement parse(String raw) {
++    Requirement out = new Requirement();
++    String text = OfferParser.normalize(raw == null ? "" : raw);
++    boolean rateContext = text.contains("tasa de aceptacion") || text.matches("(?s).*\\bta\\b.*");
++    boolean promotionContext =
++        text.contains("promocion")
++            || text.contains("promo")
++            || text.contains("premio")
++            || text.contains("recompensa")
++            || text.contains("viajes para conseguir");
++    if (!rateContext || !promotionContext) return out;
++
++    out.targetRate = first(TARGET_AFTER_LABEL, text);
++    if (out.targetRate < 0) out.targetRate = first(TARGET_BEFORE_RATE, text);
++    if (out.targetRate < 0) out.targetRate = first(TARGET_STANDALONE, text);
++    out.currentRate = first(CURRENT, text);
++    if (out.currentRate < 0) out.currentRate = first(CURRENT_PREFIX, text);
++    if (out.currentRate < 0) out.currentRate = first(CURRENT_BLOCK, text);
++    out.offeredJourneys = integer(OFFERED, text);
++    out.acceptedJourneys = integer(ACCEPTED, text);
++    out.tripTarget = integer(TRIP_TARGET, text);
++    out.found = out.targetRate > 0 && out.targetRate <= 100;
++    if (out.currentRate > 100) out.currentRate = -1;
++    if (out.offeredJourneys >= 0
++        && out.acceptedJourneys > out.offeredJourneys) {
++      out.offeredJourneys = -1;
++      out.acceptedJourneys = -1;
++    }
++    return out;
++  }
++
++  private static double first(Pattern pattern, String text) {
++    Matcher matcher = pattern.matcher(text);
++    if (!matcher.find()) return -1;
++    try {
++      String value;
++      try {
++        value = matcher.group("rate");
++      } catch (IllegalArgumentException noNamedGroup) {
++        value = matcher.group(1);
++      }
++      return Double.parseDouble(value.replace(',', '.'));
++    } catch (RuntimeException ignored) {
++      return -1;
++    }
++  }
++
++  private static int integer(Pattern pattern, String text) {
++    Matcher matcher = pattern.matcher(text);
++    if (!matcher.find()) return -1;
++    try {
++      return Integer.parseInt(matcher.group(1));
++    } catch (RuntimeException ignored) {
++      return -1;
++    }
++  }
++
++  public static final class Requirement {
++    public boolean found;
++    public double targetRate = -1, currentRate = -1;
++    public int offeredJourneys = -1, acceptedJourneys = -1, tripTarget = -1;
++  }
++}
+diff --git a/app/src/main/java/com/cocotaxi/app/PromotionStore.java b/app/src/main/java/com/cocotaxi/app/PromotionStore.java
+index 6270bf4..9a46c3f 100644
+--- a/app/src/main/java/com/cocotaxi/app/PromotionStore.java
++++ b/app/src/main/java/com/cocotaxi/app/PromotionStore.java
+@@ -91,6 +91,72 @@ public final class PromotionStore {
+     write(c, raw);
+   }
+ 
++  /**
++   * Stores a TA condition only when Cabify displayed it explicitly or the driver entered it.
++   * A target of zero removes the condition; an absent condition never becomes an assumed rule.
++   */
++  public static void setAcceptanceRequirement(
++      Context c,
++      String id,
++      double targetRate,
++      double currentRate,
++      int offeredJourneys,
++      int acceptedJourneys) {
++    List<Snapshot> raw = rawRecords(c);
++    boolean found = false;
++    for (Snapshot s : raw) {
++      if (!s.id.equals(id)) continue;
++      found = true;
++      s.acceptanceRequired = targetRate > 0;
++      s.acceptanceTarget = s.acceptanceRequired ? clampRate(targetRate) : -1;
++      s.acceptanceCurrent = currentRate > 0 ? clampRate(currentRate) : -1;
++      s.offeredJourneys = offeredJourneys >= 0 ? offeredJourneys : -1;
++      s.acceptedJourneys =
++          acceptedJourneys >= 0 && (s.offeredJourneys < 0 || acceptedJourneys <= s.offeredJourneys)
++              ? acceptedJourneys
++              : -1;
++      s.acceptanceObservedAt = s.acceptanceRequired ? System.currentTimeMillis() : 0;
++      break;
++    }
++    if (!found) throw new IllegalArgumentException("La promoción ya no existe");
++    write(c, raw);
++  }
++
++  /**
++   * Associates an explicit Cabify promo requirement with a configured active promotion. Multiple
++   * simultaneous promos are changed only when the displayed trip target identifies one of them.
++   */
++  public static boolean observeCabifyText(Context c, String normalizedText) {
++    PromotionRequirementParser.Requirement r =
++        PromotionRequirementParser.parse(normalizedText == null ? "" : normalizedText);
++    if (!r.found) return false;
++    CocoStore.Session current = CocoStore.get(c).session();
++    if (!current.active) return false;
++    long now = System.currentTimeMillis();
++    List<Snapshot> raw = rawRecords(c);
++    List<Snapshot> candidates = new ArrayList<>();
++    for (Snapshot s : raw) {
++      if (!current.id.equals(s.session) || now < s.start || now >= s.end) continue;
++      if (r.tripTarget > 0 && s.target != r.tripTarget) continue;
++      candidates.add(s);
++    }
++    if (candidates.size() != 1) return false;
++    Snapshot s = candidates.get(0);
++    s.acceptanceRequired = true;
++    s.acceptanceTarget = clampRate(r.targetRate);
++    s.acceptanceCurrent = r.currentRate > 0 ? clampRate(r.currentRate) : -1;
++    s.offeredJourneys = r.offeredJourneys;
++    s.acceptedJourneys = r.acceptedJourneys;
++    s.acceptanceObservedAt = now;
++    write(c, raw);
++    return true;
++  }
++
++  private static double clampRate(double value) {
++    if (!Double.isFinite(value)) return -1;
++    return Math.max(0, Math.min(100, value));
++  }
++
+   private static void validate(
+       CocoStore.Session session, int target, double bonus, long start, long end, int completed) {
+     if (target < 1
+@@ -151,6 +217,12 @@ public final class PromotionStore {
+       s.start = p.getLong(i + ".start", 0);
+       s.end = p.getLong(i + ".end", 0);
+       s.adjustment = p.getInt(i + ".adjustment", 0);
++      s.acceptanceRequired = p.getBoolean(i + ".ta_required", false);
++      s.acceptanceTarget = p.getLong(i + ".ta_target", -100) / 100.0;
++      s.acceptanceCurrent = p.getLong(i + ".ta_current", -100) / 100.0;
++      s.offeredJourneys = p.getInt(i + ".ta_offered", -1);
++      s.acceptedJourneys = p.getInt(i + ".ta_accepted", -1);
++      s.acceptanceObservedAt = p.getLong(i + ".ta_at", 0);
+       if (!s.id.isEmpty() && !s.session.isEmpty() && s.target > 0) out.add(s);
+     }
+     return out;
+@@ -167,7 +239,13 @@ public final class PromotionStore {
+           .putLong(i + ".bonus", Money.cents(s.bonus))
+           .putLong(i + ".start", s.start)
+           .putLong(i + ".end", s.end)
+-          .putInt(i + ".adjustment", s.adjustment);
++          .putInt(i + ".adjustment", s.adjustment)
++          .putBoolean(i + ".ta_required", s.acceptanceRequired)
++          .putLong(i + ".ta_target", Math.round(s.acceptanceTarget * 100))
++          .putLong(i + ".ta_current", Math.round(s.acceptanceCurrent * 100))
++          .putInt(i + ".ta_offered", s.offeredJourneys)
++          .putInt(i + ".ta_accepted", s.acceptedJourneys)
++          .putLong(i + ".ta_at", s.acceptanceObservedAt);
+     }
+     e.apply();
+   }
+@@ -232,6 +310,10 @@ public final class PromotionStore {
+     public int target, completed, samples, adjustment;
+     public double bonus, cycle = 15;
+     public long start, end, now;
++    public boolean acceptanceRequired;
++    public double acceptanceTarget = -1, acceptanceCurrent = -1;
++    public int offeredJourneys = -1, acceptedJourneys = -1;
++    public long acceptanceObservedAt;
+     public java.util.List<Snapshot> promotions = java.util.Collections.emptyList();
+ 
+     private void copyScalar(Snapshot s) {
+@@ -246,6 +328,12 @@ public final class PromotionStore {
+       start = s.start;
+       end = s.end;
+       now = s.now;
++      acceptanceRequired = s.acceptanceRequired;
++      acceptanceTarget = s.acceptanceTarget;
++      acceptanceCurrent = s.acceptanceCurrent;
++      offeredJourneys = s.offeredJourneys;
++      acceptedJourneys = s.acceptedJourneys;
++      acceptanceObservedAt = s.acceptanceObservedAt;
+     }
+ 
+     public boolean active() {
+@@ -260,6 +348,38 @@ public final class PromotionStore {
+       return target > completed && now >= start && now < end;
+     }
+ 
++    /** Candidate acceptance can only maintain or improve TA. Returns false when eligibility is unknown. */
++    public boolean acceptanceAllowsCredit(long at) {
++      if (!acceptanceRequired) return true;
++      if (acceptanceTarget <= 0 || acceptanceTarget > 100) return false;
++      // Cabify's current TA/counters can change after ignored offers. Do not turn a stale reading
++      // into promotional money that may never be paid.
++      boolean fresh =
++          acceptanceObservedAt > 0
++              && at >= acceptanceObservedAt
++              && at - acceptanceObservedAt <= 20 * 60_000L;
++      if (!fresh) return false;
++      if (acceptanceCurrent >= acceptanceTarget) return true;
++      int remaining = Math.max(1, target - completed);
++      if (offeredJourneys < 0 || acceptedJourneys < 0) return false;
++      double bestPossible =
++          (acceptedJourneys + remaining) * 100.0 / Math.max(1, offeredJourneys + remaining);
++      return bestPossible + 1e-7 >= acceptanceTarget;
++    }
++
++    public String acceptanceDescription() {
++      if (!acceptanceRequired) return "Sin requisito TA";
++      String targetText = "TA mín. " + decimalRate(acceptanceTarget) + "%";
++      if (acceptanceCurrent < 0) return targetText + " · actual no leída";
++      return targetText + " · actual " + decimalRate(acceptanceCurrent) + "%";
++    }
++
++    private static String decimalRate(double value) {
++      return value == (int) value
++          ? Integer.toString((int) value)
++          : String.format(java.util.Locale.US, "%.1f", value);
++    }
++
+     public String description() {
+       if (promotions != null && !promotions.isEmpty()) {
+         int active = 0, future = 0;
+@@ -281,7 +401,7 @@ public final class PromotionStore {
+       double requiredCycle = left / remaining;
+       double targetCycle = (end - start) / 60000.0 / target;
+       boolean reachable = requiredCycle >= Math.max(8.0, targetCycle * .85);
+-      return completed
++      String base = completed
+           + "/"
+           + target
+           + " viajes · +"
+@@ -290,6 +410,7 @@ public final class PromotionStore {
+           + String.format(java.util.Locale.US, "%.1f", requiredCycle)
+           + " min/viaje"
+           + (reachable ? " · alcanzable" : " · ritmo comprometido");
++      return acceptanceRequired ? base + " · " + acceptanceDescription() : base;
+     }
+   }
+ }
+diff --git a/app/src/main/java/com/cocotaxi/app/SpatialDemandVision.java b/app/src/main/java/com/cocotaxi/app/SpatialDemandVision.java
+new file mode 100644
+index 0000000..1215cd5
+--- /dev/null
++++ b/app/src/main/java/com/cocotaxi/app/SpatialDemandVision.java
+@@ -0,0 +1,348 @@
++package com.cocotaxi.app;
++
++import android.graphics.Bitmap;
++import android.graphics.Color;
++import android.graphics.Rect;
++import java.util.*;
++
++/**
++ * Screen-only heat-map memory. Demand is stored primarily as colored cells plus visual landmarks;
++ * barrio/street text is a secondary anchor. No GPS, geocoder or private endpoint is used.
++ */
++public final class SpatialDemandVision {
++  private static final long FRESH_MS = 6 * 60_000L;
++  private static final int MAX_LABELS = 100;
++  private static final int COLS = 18, ROWS = 28;
++  private static final float MAP_LEFT = .08f, MAP_RIGHT = .92f, MAP_TOP = .12f, MAP_BOTTOM = .82f;
++
++  private final LinkedHashMap<String, HotLabel> labels = new LinkedHashMap<>();
++  private final LinkedHashMap<String, Landmark> landmarks = new LinkedHashMap<>();
++  private final byte[] cells = new byte[COLS * ROWS];
++  private long sampledAt;
++  private int overallSignal = -1;
++  private boolean hasGrid;
++
++  public synchronized int observe(
++      Bitmap bitmap, ScreenOcrEngine.Frame frame, String normalized, long now) {
++    if (bitmap == null || frame == null || OfferParser.isHistoryNormalized(normalized)) return -1;
++    int overall = overallHeat(bitmap);
++    boolean mapLike =
++        DemandModel.isMapScreenNormalized(normalized)
++            || (!OfferParser.isLikelyOfferNormalized(normalized) && overall >= 2);
++    if (!mapLike) return -1;
++
++    sampleCells(bitmap);
++    sampledAt = now;
++    overallSignal = overall;
++    for (ScreenOcrEngine.LineInfo line : frame.lines) {
++      String label = OfferParser.normalize(line.text).trim();
++      if (!usefulMapLabel(label)) continue;
++      String key = canonical(label);
++      if (key.isEmpty() || line.bounds == null || line.bounds.isEmpty()) continue;
++      float x = line.bounds.exactCenterX() / Math.max(1f, bitmap.getWidth());
++      float y = line.bounds.exactCenterY() / Math.max(1f, bitmap.getHeight());
++      int heat = Math.max(cellHeat(x, y), heatAround(bitmap, line.bounds));
++      landmarks.put(key, new Landmark(x, y, now));
++      if (heat >= 2) labels.put(key, new HotLabel(key, heat, now));
++    }
++    prune(now);
++    return Math.max(overall, DemandModel.textSignalNormalized(normalized));
++  }
++
++  /** Accessibility-only path: use fresh named anchors but never call an unknown address cold. */
++  public synchronized void annotate(Offer offer, long now) {
++    if (offer == null) return;
++    prune(now);
++    if (!fresh(now)) return;
++    offer.pickupHeat = classify(offer.pickupArea, now);
++    offer.destinationHeat = classify(offer.destinationArea, now);
++    offer.zoneEvidence = offer.pickupHeat >= 0 && offer.destinationHeat >= 0;
++  }
++
++  /** Aligns current map labels with the saved demand grid and projects offer labels into it. */
++  public synchronized void annotate(
++      Offer offer, Bitmap bitmap, ScreenOcrEngine.Frame frame, long now) {
++    annotate(offer, now);
++    if (offer == null || bitmap == null || frame == null || !fresh(now) || !hasGrid) return;
++    Alignment alignment = alignment(bitmap, frame, now);
++    if (alignment == null) return;
++    if (offer.pickupHeat < 0)
++      offer.pickupHeat = classifyProjected(offer.pickupArea, bitmap, frame, alignment);
++    if (offer.destinationHeat < 0)
++      offer.destinationHeat = classifyProjected(offer.destinationArea, bitmap, frame, alignment);
++    offer.zoneEvidence = offer.pickupHeat >= 0 && offer.destinationHeat >= 0;
++  }
++
++  public synchronized int classify(String address, long now) {
++    prune(now);
++    if (!fresh(now)) return -1;
++    String a = canonical(address);
++    if (a.isEmpty()) return -1;
++    Set<String> addressTokens = tokens(a);
++    int bestHeat = -1, bestScore = 0;
++    for (HotLabel h : labels.values()) {
++      int score = overlap(addressTokens, tokens(h.label));
++      if (!h.label.isEmpty() && (a.contains(h.label) || h.label.contains(a))) score += 3;
++      if (score > bestScore || score == bestScore && score > 0 && h.heat > bestHeat) {
++        bestScore = score;
++        bestHeat = h.heat;
++      }
++    }
++    return bestScore >= 1 ? bestHeat : -1;
++  }
++
++  public synchronized int overallSignal(long now) {
++    return fresh(now) ? overallSignal : -1;
++  }
++
++  synchronized void rememberForTests(String label, int heat, long now) {
++    String key = canonical(label);
++    labels.put(key, new HotLabel(key, heat, now));
++    landmarks.put(key, new Landmark(.5f, .5f, now));
++    sampledAt = now;
++    overallSignal = Math.max(overallSignal, heat);
++  }
++
++  private int classifyProjected(
++      String address, Bitmap bitmap, ScreenOcrEngine.Frame frame, Alignment alignment) {
++    String wanted = canonical(address);
++    if (wanted.isEmpty()) return -1;
++    Set<String> wantedTokens = tokens(wanted);
++    ScreenOcrEngine.LineInfo best = null;
++    int bestScore = 0;
++    for (ScreenOcrEngine.LineInfo line : frame.lines) {
++      String candidate = canonical(line.text);
++      if (candidate.isEmpty() || line.bounds == null || line.bounds.isEmpty()) continue;
++      int score = overlap(wantedTokens, tokens(candidate));
++      if (wanted.contains(candidate) || candidate.contains(wanted)) score += 3;
++      if (score > bestScore) {
++        bestScore = score;
++        best = line;
++      }
++    }
++    if (best == null || bestScore < 1) return -1;
++    float currentX = best.bounds.exactCenterX() / Math.max(1f, bitmap.getWidth());
++    float currentY = best.bounds.exactCenterY() / Math.max(1f, bitmap.getHeight());
++    return cellHeat(alignment.scale * currentX + alignment.dx, alignment.scale * currentY + alignment.dy);
++  }
++
++  private Alignment alignment(Bitmap bitmap, ScreenOcrEngine.Frame frame, long now) {
++    List<float[]> pairs = new ArrayList<>();
++    for (ScreenOcrEngine.LineInfo line : frame.lines) {
++      String key = canonical(line.text);
++      Landmark old = landmarks.get(key);
++      if (old == null || now - old.at > FRESH_MS || line.bounds == null || line.bounds.isEmpty()) continue;
++      float x = line.bounds.exactCenterX() / Math.max(1f, bitmap.getWidth());
++      float y = line.bounds.exactCenterY() / Math.max(1f, bitmap.getHeight());
++      pairs.add(new float[] {x, y, old.x, old.y});
++    }
++    if (pairs.isEmpty()) return null;
++    float scale = 1f;
++    List<Float> ratios = new ArrayList<>();
++    for (int i = 0; i < pairs.size(); i++)
++      for (int j = i + 1; j < pairs.size(); j++) {
++        float[] a = pairs.get(i), b = pairs.get(j);
++        double current = Math.hypot(a[0] - b[0], a[1] - b[1]);
++        double previous = Math.hypot(a[2] - b[2], a[3] - b[3]);
++        if (current > .035 && previous > .02) ratios.add((float) (previous / current));
++      }
++    if (!ratios.isEmpty()) scale = Math.max(.65f, Math.min(1.55f, median(ratios)));
++    List<Float> dxs = new ArrayList<>(), dys = new ArrayList<>();
++    for (float[] pair : pairs) {
++      dxs.add(pair[2] - scale * pair[0]);
++      dys.add(pair[3] - scale * pair[1]);
++    }
++    return new Alignment(scale, median(dxs), median(dys));
++  }
++
++  private void sampleCells(Bitmap bitmap) {
++    Arrays.fill(cells, (byte) 0);
++    int width = bitmap.getWidth(), height = bitmap.getHeight();
++    float[] hsv = new float[3];
++    for (int row = 0; row < ROWS; row++) {
++      int top = Math.round(height * (MAP_TOP + (MAP_BOTTOM - MAP_TOP) * row / ROWS));
++      int bottom = Math.round(height * (MAP_TOP + (MAP_BOTTOM - MAP_TOP) * (row + 1) / ROWS));
++      for (int col = 0; col < COLS; col++) {
++        int left = Math.round(width * (MAP_LEFT + (MAP_RIGHT - MAP_LEFT) * col / COLS));
++        int right = Math.round(width * (MAP_LEFT + (MAP_RIGHT - MAP_LEFT) * (col + 1) / COLS));
++        int red = 0, yellow = 0, total = 0;
++        int step = Math.max(2, Math.min(Math.max(1, right - left), Math.max(1, bottom - top)) / 5);
++        for (int y = Math.max(0, top); y < Math.min(height, bottom); y += step)
++          for (int x = Math.max(0, left); x < Math.min(width, right); x += step) {
++            Color.colorToHSV(bitmap.getPixel(x, y), hsv);
++            int heat = hsvHeat(hsv);
++            if (heat == 3) red++;
++            else if (heat == 2) yellow++;
++            total++;
++          }
++        if (total > 0) {
++          if (red / (double) total >= .05) cells[row * COLS + col] = 3;
++          else if ((red + yellow) / (double) total >= .09) cells[row * COLS + col] = 2;
++        }
++      }
++    }
++    hasGrid = true;
++  }
++
++  private int cellHeat(float x, float y) {
++    if (!hasGrid || x < MAP_LEFT || x >= MAP_RIGHT || y < MAP_TOP || y >= MAP_BOTTOM) return -1;
++    int col = Math.min(COLS - 1, (int) ((x - MAP_LEFT) / (MAP_RIGHT - MAP_LEFT) * COLS));
++    int row = Math.min(ROWS - 1, (int) ((y - MAP_TOP) / (MAP_BOTTOM - MAP_TOP) * ROWS));
++    return cells[row * COLS + col];
++  }
++
++  private boolean fresh(long now) {
++    return sampledAt > 0 && now >= sampledAt && now - sampledAt <= FRESH_MS;
++  }
++
++  private void prune(long now) {
++    labels.entrySet().removeIf(e -> now < e.getValue().at || now - e.getValue().at > FRESH_MS);
++    landmarks.entrySet().removeIf(e -> now < e.getValue().at || now - e.getValue().at > FRESH_MS);
++    trim(labels);
++    trim(landmarks);
++    if (!fresh(now)) {
++      overallSignal = -1;
++      hasGrid = false;
++    }
++  }
++
++  private static <T> void trim(LinkedHashMap<String, T> values) {
++    while (values.size() > MAX_LABELS) {
++      Iterator<String> it = values.keySet().iterator();
++      if (!it.hasNext()) break;
++      it.next();
++      it.remove();
++    }
++  }
++
++  private static int overallHeat(Bitmap b) {
++    int red = 0, yellow = 0, total = 0;
++    float[] hsv = new float[3];
++    int left = Math.max(0, Math.round(b.getWidth() * MAP_LEFT));
++    int right = Math.min(b.getWidth(), Math.round(b.getWidth() * MAP_RIGHT));
++    int top = Math.max(0, Math.round(b.getHeight() * MAP_TOP));
++    int bottom = Math.min(b.getHeight(), Math.round(b.getHeight() * MAP_BOTTOM));
++    for (int y = top; y < bottom; y += 12)
++      for (int x = left; x < right; x += 12) {
++        Color.colorToHSV(b.getPixel(x, y), hsv);
++        total++;
++        int heat = hsvHeat(hsv);
++        if (heat == 3) red++;
++        else if (heat == 2) yellow++;
++      }
++    if (total == 0) return -1;
++    if (red / (double) total >= .025) return 3;
++    if ((red + yellow) / (double) total >= .055) return 2;
++    return -1;
++  }
++
++  private static int heatAround(Bitmap b, Rect bounds) {
++    if (bounds == null || bounds.isEmpty()) return -1;
++    int padX = Math.max(28, bounds.width() / 2), padY = Math.max(26, bounds.height());
++    int l = Math.max(0, bounds.left - padX), r = Math.min(b.getWidth(), bounds.right + padX);
++    int t = Math.max(0, bounds.top - padY), bot = Math.min(b.getHeight(), bounds.bottom + padY);
++    int red = 0, yellow = 0, total = 0;
++    float[] hsv = new float[3];
++    for (int y = t; y < bot; y += 5)
++      for (int x = l; x < r; x += 5) {
++        Color.colorToHSV(b.getPixel(x, y), hsv);
++        total++;
++        int heat = hsvHeat(hsv);
++        if (heat == 3) red++;
++        else if (heat == 2) yellow++;
++      }
++    if (total == 0) return -1;
++    if (red / (double) total >= .035) return 3;
++    if ((red + yellow) / (double) total >= .07) return 2;
++    return 0;
++  }
++
++  private static int hsvHeat(float[] hsv) {
++    if (hsv[1] < .42f || hsv[2] < .42f) return 0;
++    float h = hsv[0];
++    if (h <= 22 || h >= 338) return 3;
++    if (h >= 25 && h <= 72) return 2;
++    return 0;
++  }
++
++  private static boolean usefulMapLabel(String s) {
++    if (s == null || s.length() < 3 || s.length() > 70) return false;
++    if (s.matches(".*\\$.*|.*\\b[0-9]+%.*|.*\\b[0-9]{1,2}:[0-9]{2}.*")) return false;
++    String[] bad = {
++      "cabify", "google", "mapa", "buscando", "viajes disponibles", "inicio", "reservas",
++      "promos", "billetera", "aceptar", "rechazar", "para ti", "en app", "ganancias", "hoy",
++      "conectado", "desconectar", "perfil", "usuario", "valoracion", "viajes realizados"
++    };
++    for (String x : bad) if (s.contains(x)) return false;
++    return !tokens(canonical(s)).isEmpty();
++  }
++
++  private static String canonical(String s) {
++    return OfferParser.normalize(s == null ? "" : s)
++        .replaceAll("[^a-z0-9]+", " ")
++        .replaceAll("\\s+", " ")
++        .trim();
++  }
++
++  private static Set<String> tokens(String s) {
++    Set<String> out = new HashSet<>();
++    if (s == null) return out;
++    for (String token : s.split(" ")) {
++      if (token.length() < 4 || STOP.contains(token) || token.matches("[0-9]+")) continue;
++      out.add(token);
++    }
++    return out;
++  }
++
++  private static int overlap(Set<String> a, Set<String> b) {
++    int score = 0;
++    for (String t : b) if (a.contains(t)) score++;
++    return score;
++  }
++
++  private static float median(List<Float> values) {
++    Collections.sort(values);
++    int middle = values.size() / 2;
++    return values.size() % 2 == 1
++        ? values.get(middle)
++        : (values.get(middle - 1) + values.get(middle)) / 2f;
++  }
++
++  private static final Set<String> STOP =
++      new HashSet<>(
++          Arrays.asList(
++              "avenida", "calle", "ruta", "camino", "bulevar", "boulevard", "esquina", "esq",
++              "montevideo", "uruguay", "department", "departamento", "ciudad", "localidad", "barrio",
++              "norte", "sur", "este", "oeste", "hacia", "desde", "hasta", "para", "del",
++              "las", "los", "una", "uno", "con", "por", "km"));
++
++  private static final class HotLabel {
++    final String label;
++    final int heat;
++    final long at;
++    HotLabel(String label, int heat, long at) {
++      this.label = label;
++      this.heat = heat;
++      this.at = at;
++    }
++  }
++
++  private static final class Landmark {
++    final float x, y;
++    final long at;
++    Landmark(float x, float y, long at) {
++      this.x = x;
++      this.y = y;
++      this.at = at;
++    }
++  }
++
++  private static final class Alignment {
++    final float scale, dx, dy;
++    Alignment(float scale, float dx, float dy) {
++      this.scale = scale;
++      this.dx = dx;
++      this.dy = dy;
++    }
++  }
++}
+diff --git a/app/src/main/java/com/cocotaxi/app/TextCollector.java b/app/src/main/java/com/cocotaxi/app/TextCollector.java
+index c96ae53..5aa10c6 100644
+--- a/app/src/main/java/com/cocotaxi/app/TextCollector.java
++++ b/app/src/main/java/com/cocotaxi/app/TextCollector.java
+@@ -19,6 +19,22 @@ public final class TextCollector {
+     public final String text;
+     public final int acceptCount;
+     public final Rect acceptBounds;
++    /** Visible nodes inspected in this pass; contains no address or passenger text. */
++    public final int nodeCount;
++    /** Number of positioned text/description elements found in the tree. */
++    public final int textEntries;
++    /** True when Cabify exposes a Journey Offer semantic/test tag even if visible text is sparse. */
++    public final boolean offerSemantic;
++    /** True on Cabify's pickup/in-service journey screen, even when Compose exposes no text. */
++    public final boolean journeySemantic;
++    /** True only for the final confirmation action, not the first Finish slider/button. */
++    public final boolean finishConfirmSemantic;
++    /** True after Cabify has left the journey and opened its completed/rating screen. */
++    public final boolean completionSemantic;
++    /** True only on a terminal cancellation screen, never on the normal Cancel action. */
++    public final boolean cancellationSemantic;
++    /** Compact, non-personal trace of semantic ids. Useful when Cabify changes its UI. */
++    public final String semanticTrace;
+     private final boolean listContainer;
+     private AccessibilityNodeInfo acceptAction;
+ 
+@@ -26,13 +42,29 @@ public final class TextCollector {
+         String text,
+         int acceptCount,
+         Rect acceptBounds,
++        int nodeCount,
++        int textEntries,
+         AccessibilityNodeInfo action,
+-        boolean listContainer) {
++        boolean listContainer,
++        boolean offerSemantic,
++        boolean journeySemantic,
++        boolean finishConfirmSemantic,
++        boolean completionSemantic,
++        boolean cancellationSemantic,
++        String semanticTrace) {
+       this.text = text;
+       this.acceptCount = acceptCount;
+       this.acceptBounds = acceptBounds == null ? new Rect() : new Rect(acceptBounds);
++      this.nodeCount = nodeCount;
++      this.textEntries = textEntries;
+       this.acceptAction = action;
+       this.listContainer = listContainer;
++      this.offerSemantic = offerSemantic;
++      this.journeySemantic = journeySemantic;
++      this.finishConfirmSemantic = finishConfirmSemantic;
++      this.completionSemantic = completionSemantic;
++      this.cancellationSemantic = cancellationSemantic;
++      this.semanticTrace = semanticTrace == null ? "" : semanticTrace;
+     }
+ 
+     public boolean hasAccept() {
+@@ -67,40 +99,119 @@ public final class TextCollector {
+   }
+ 
+   private static final class ScanState {
+-    final StringBuilder text = new StringBuilder(512);
++    final List<TextPiece> text = new ArrayList<>();
++    final Set<String> textKeys = new HashSet<>();
+     int visited;
++    int textOrder;
+     int acceptCount;
++    final Set<String> acceptTargets = new HashSet<>();
+     Rect acceptBounds;
+     AccessibilityNodeInfo acceptAction;
+     boolean listContainer;
++    boolean offerSemantic;
++    boolean journeySemantic;
++    boolean finishConfirmSemantic;
++    boolean completionSemantic;
++    boolean cancellationSemantic;
++    final LinkedHashSet<String> semanticIds = new LinkedHashSet<>();
++
++    void addText(CharSequence value, AccessibilityNodeInfo node) {
++      if (value == null || isBlank(value) || text.size() >= 180) return;
++      String raw = value.toString().trim();
++      Rect bounds = new Rect();
++      if (node != null) node.getBoundsInScreen(bounds);
++      String key = raw + '@' + bounds.left + ',' + bounds.top + ',' + bounds.right + ',' + bounds.bottom;
++      if (textKeys.add(key)) text.add(new TextPiece(raw, bounds, textOrder++));
++    }
++
++    String orderedText() {
++      text.sort(
++          (a, b) -> {
++            // A five-pixel row bucket keeps labels on the same visual line without using a
++            // tolerance comparator (which would violate the comparator transitivity contract).
++            int top = Integer.compare(a.bounds.top / 5, b.bounds.top / 5);
++            if (top != 0) return top;
++            int left = Integer.compare(a.bounds.left, b.bounds.left);
++            return left != 0 ? left : Integer.compare(a.order, b.order);
++          });
++      StringBuilder out = new StringBuilder(512);
++      for (TextPiece piece : text) out.append(piece.value).append('\n');
++      return out.toString();
++    }
++  }
++
++  private static final class TextPiece {
++    final String value;
++    final Rect bounds;
++    final int order;
++
++    TextPiece(String value, Rect bounds, int order) {
++      this.value = value;
++      this.bounds = new Rect(bounds);
++      this.order = order;
++    }
+   }
+ 
+   public static Snapshot snapshot(AccessibilityNodeInfo root) {
+     ScanState state = new ScanState();
+     walkSnapshot(root, state, 0);
+     return new Snapshot(
+-        state.text.toString(),
++        state.orderedText(),
+         state.acceptCount,
+         state.acceptBounds,
++        state.visited,
++        state.text.size(),
+         state.acceptAction,
+-        state.listContainer);
++        state.listContainer,
++        state.offerSemantic,
++        state.journeySemantic,
++        state.finishConfirmSemantic,
++        state.completionSemantic,
++        state.cancellationSemantic,
++        String.join(",", state.semanticIds));
+   }
+ 
+   private static void walkSnapshot(AccessibilityNodeInfo n, ScanState state, int depth) {
+     if (n == null || depth > 30 || state.visited++ > 600 || !n.isVisibleToUser()) return;
+ 
+     CharSequence t = n.getText(), d = n.getContentDescription();
++    String semantic = semanticId(n);
+     CharSequence className = n.getClassName();
+     String classText = className == null ? "" : className.toString();
+     if (classText.endsWith("RecyclerView")
+         || classText.endsWith("ListView")
+         || n.getCollectionInfo() != null) state.listContainer = true;
+-    if (t != null && !isBlank(t)) state.text.append(t).append('\n');
+-    else if (d != null && !isBlank(d)) state.text.append(d).append('\n');
++    if (t != null && !isBlank(t)) state.addText(t, n);
++    if (d != null && !isBlank(d) && (t == null || !t.toString().contentEquals(d)))
++      state.addText(d, n);
+ 
+-    if (isAcceptLabelFast(n)) {
+-      state.acceptCount++;
+-      if (state.acceptBounds == null) captureAcceptTarget(n, state);
++    if (!semantic.isEmpty()) {
++      if (isOfferSemantic(semantic)) state.offerSemantic = true;
++      if (AssignmentSignals.isAssignedSemantic(semantic)) state.journeySemantic = true;
++      if (AssignmentSignals.isFinishConfirmationSemantic(semantic))
++        state.finishConfirmSemantic = true;
++      if (AssignmentSignals.isCompletionSemantic(semantic)) state.completionSemantic = true;
++      if (AssignmentSignals.isCancellationSemantic(semantic)) state.cancellationSemantic = true;
++      if (state.semanticIds.size() < 12 && isInterestingSemantic(semantic))
++        state.semanticIds.add(semantic);
++      // Compose test tags are not guaranteed to expose a visible label. Add only the action word
++      // required by OfferParser; never inject fare, time or address data that was not displayed.
++      if (isAcceptSemantic(semantic)
++          && !containsAcceptLabel(t)
++          && !containsAcceptLabel(d)) state.addText("aceptar", n);
++    }
++
++    if (isAcceptNodeFast(n)) {
++      Rect target = new Rect();
++      n.getBoundsInScreen(target);
++      String targetKey =
++          target.isEmpty()
++              ? "semantic:" + semantic
++              : (target.centerX() / 32) + ":" + (target.centerY() / 24);
++      if (state.acceptTargets.add(targetKey)) {
++        state.acceptCount++;
++        if (state.acceptBounds == null) captureAcceptTarget(n, state);
++      }
+     }
+ 
+     for (int i = 0; i < n.getChildCount(); i++) {
+@@ -119,14 +230,61 @@ public final class TextCollector {
+   }
+ 
+   /** Accept labels contain no accents, so avoid full Unicode normalization for every node. */
+-  private static boolean isAcceptLabelFast(AccessibilityNodeInfo n) {
++  private static boolean isAcceptNodeFast(AccessibilityNodeInfo n) {
+     if (n == null || !n.isVisibleToUser() || !n.isEnabled()) return false;
+-    CharSequence raw = n.getText() != null ? n.getText() : n.getContentDescription();
++    return containsAcceptLabel(n.getText())
++        || containsAcceptLabel(n.getContentDescription())
++        || isAcceptSemantic(semanticId(n));
++  }
++
++  private static boolean containsAcceptLabel(CharSequence raw) {
+     if (raw == null) return false;
+     String t = raw.toString().trim();
+     return "aceptar".equalsIgnoreCase(t)
+         || "aceptar viaje".equalsIgnoreCase(t)
+-        || "aceptar carrera".equalsIgnoreCase(t);
++        || "aceptar carrera".equalsIgnoreCase(t)
++        || isAcceptSemantic(normalizedSemantic(t));
++  }
++
++  private static String semanticId(AccessibilityNodeInfo n) {
++    if (n == null) return "";
++    String id = normalizedSemantic(n.getViewIdResourceName());
++    if (!id.isEmpty() && isInterestingSemantic(id)) return id;
++    CharSequence description = n.getContentDescription();
++    String desc = normalizedSemantic(description == null ? "" : description.toString());
++    return isInterestingSemantic(desc) ? desc : id;
++  }
++
++  private static String normalizedSemantic(String raw) {
++    if (raw == null || raw.isEmpty()) return "";
++    return OfferParser.normalize(raw).replaceAll("[^a-z0-9]+", "_").replaceAll("^_+|_+$", "");
++  }
++
++  private static boolean isInterestingSemantic(String id) {
++    return isOfferSemantic(id)
++        || AssignmentSignals.isAssignedSemantic(id)
++        || AssignmentSignals.isFinishConfirmationSemantic(id)
++        || AssignmentSignals.isCompletionSemantic(id)
++        || AssignmentSignals.isCancellationSemantic(id)
++        || id.contains("jf_slider")
++        || id.contains("accept_button")
++        || id.contains("reject_button")
++        || id.contains("pickup")
++        || id.contains("dropoff");
++  }
++
++  private static boolean isOfferSemantic(String id) {
++    return id.contains("journey_offer")
++        || id.contains("modularized_offer")
++        || id.contains("offer_screen")
++        || id.contains("offer_launcher");
++  }
++
++  private static boolean isAcceptSemantic(String id) {
++    if (id == null || id.isEmpty()) return false;
++    return (isOfferSemantic(id) && (id.contains("accept_button") || id.endsWith("_accept")))
++        || id.equals("accept_offer")
++        || id.endsWith("_accept_offer");
+   }
+ 
+   /** Resolve the clickable ancestor and gesture bounds once, while the tree is fresh. */
+@@ -231,7 +389,7 @@ public final class TextCollector {
+       AccessibilityNodeInfo n, Offer wanted, int depth, int[] visited) {
+     if (n == null || depth > 30 || visited[0]++ > 600 || !n.isVisibleToUser()) return false;
+ 
+-    if (isAcceptLabelFast(n)) {
++    if (isAcceptNodeFast(n)) {
+       Rect bounds = new Rect();
+       n.getBoundsInScreen(bounds);
+       int center = bounds.centerY();
+diff --git a/app/src/test/java/com/cocotaxi/app/StoreTest.java b/app/src/test/java/com/cocotaxi/app/StoreTest.java
+index ba3f59f..8f8a66f 100644
+--- a/app/src/test/java/com/cocotaxi/app/StoreTest.java
++++ b/app/src/test/java/com/cocotaxi/app/StoreTest.java
+@@ -49,6 +49,22 @@ public class StoreTest {
+     assertEquals(m + 5, st.session().minutes, .0001);
+   }
+ 
++  @Test
++  public void pauseAlsoFreezesActiveServiceClock() {
++    String id = attempt();
++    assertTrue(st.confirmAccepted(id));
++    ShadowSystemClock.advanceBy(Duration.ofMinutes(3));
++    st.pause();
++    double serviceAtPause = st.session().service;
++    ShadowSystemClock.advanceBy(Duration.ofMinutes(20));
++    assertEquals(serviceAtPause, st.session().service, .001);
++    st.pause();
++    ShadowSystemClock.advanceBy(Duration.ofMinutes(2));
++    assertEquals(serviceAtPause + 2, st.session().service, .02);
++    assertTrue(st.complete(id));
++    assertEquals(serviceAtPause + 2, st.session().service, .02);
++  }
++
+   @Test
+   public void doubleStopDoesNotAddTime() {
+     ShadowSystemClock.advanceBy(Duration.ofMinutes(10));
+@@ -116,6 +132,18 @@ public class StoreTest {
+     assertEquals(0, st.session().trips);
+   }
+ 
++  @Test
++  public void serviceStartsOnlyAfterCabifyShowsAssignment() {
++    String id = attempt();
++    ShadowSystemClock.advanceBy(Duration.ofSeconds(10));
++    assertEquals("INTENTO", st.find(id).status);
++    assertEquals(0, st.session().service, .001);
++    st.observe("Ir a recoger al pasajero");
++    assertEquals("ASIGNADO", st.find(id).status);
++    ShadowSystemClock.advanceBy(Duration.ofMinutes(1));
++    assertEquals(1, st.session().service, .02);
++  }
++
+   @Test
+   public void confirmedAcceptanceStartsLiveServiceAndIncomeImmediately() {
+     String id = attempt();
+@@ -237,14 +265,40 @@ public class StoreTest {
+ 
+ 
+   @Test
+-  public void automaticServiceStopsGrowingAtCapturedOfferDuration() {
++  public void automaticServiceUsesRealElapsedTimeBeyondOfferEstimate() {
+     String id = attempt();
+     assertTrue(st.confirmAccepted(id));
+     ShadowSystemClock.advanceBy(Duration.ofMinutes(20));
+     CocoStore.Session s = st.session();
+     assertEquals(20, s.minutes, .01);
+-    assertEquals(12, s.service, .01);
+-    assertEquals(8, Math.max(0, s.minutes - s.service), .01);
++    assertEquals(20, s.service, .01);
++    assertEquals(0, Math.max(0, s.minutes - s.service), .01);
++  }
++
++  @Test
++  public void passengerCancellationStopsClockAndRemovesTripCompletely() {
++    String id = attempt();
++    st.observe("Ir a recoger al pasajero");
++    ShadowSystemClock.advanceBy(Duration.ofMinutes(5));
++    st.observe("El pasajero canceló. Viaje cancelado");
++    assertNull(st.find(id));
++    assertNull(st.activeTrip());
++    assertEquals(0, st.session().money, .001);
++    assertEquals(0, st.session().trips);
++    assertEquals(0, st.session().service, .001);
++  }
++
++  @Test
++  public void driverCancellationIsRemovedEvenWhileCocoPaused() {
++    String id = attempt();
++    st.observe("He llegado");
++    ShadowSystemClock.advanceBy(Duration.ofMinutes(3));
++    st.pause();
++    st.observe("Has cancelado el viaje");
++    assertNull(st.find(id));
++    assertNull(st.activeTrip());
++    assertEquals(0, st.session().money, .001);
++    assertEquals(0, st.session().service, .001);
+   }
+ 
+   @Test
+diff --git a/app/src/test/java/com/cocotaxi/app/Strategy271Test.java b/app/src/test/java/com/cocotaxi/app/Strategy271Test.java
+index 5387084..ef58789 100644
+--- a/app/src/test/java/com/cocotaxi/app/Strategy271Test.java
++++ b/app/src/test/java/com/cocotaxi/app/Strategy271Test.java
+@@ -149,4 +149,67 @@ public class Strategy271Test {
+     assertEquals(900, r.score, .001);
+     assertTrue(r.accept);
+   }
++
++  @Test
++  public void acceptanceRequirementIsUsedOnlyWhenPromotionShowsIt() {
++    PromotionRequirementParser.Requirement none =
++        PromotionRequirementParser.parse("Promo: 11 viajes, premio $1100");
++    assertFalse(none.found);
++
++    PromotionRequirementParser.Requirement explicit =
++        PromotionRequirementParser.parse(
++            "Promoción 11 viajes\nTasa de aceptación mínima 80%\nTu tasa actual 84%\n"
++                + "Viajes recibidos 25\nViajes aceptados 21");
++    assertTrue(explicit.found);
++    assertEquals(80, explicit.targetRate, .001);
++    assertEquals(84, explicit.currentRate, .001);
++    assertEquals(25, explicit.offeredJourneys);
++    assertEquals(21, explicit.acceptedJourneys);
++    assertEquals(11, explicit.tripTarget);
++
++    PromotionRequirementParser.Requirement split =
++        PromotionRequirementParser.parse(
++            "Detalle de promoción\nTasa de aceptación\nMínimo 80%\nTu tasa actual\n84%");
++    assertTrue(split.found);
++    assertEquals(80, split.targetRate, .001);
++    assertEquals(84, split.currentRate, .001);
++  }
++
++  @Test
++  public void unverifiedRequiredTaPreventsInventingPromotionCredit() {
++    long now = System.currentTimeMillis();
++    PromotionStore.Snapshot promo = new PromotionStore.Snapshot();
++    promo.target = 11;
++    promo.completed = 0;
++    promo.bonus = 1100;
++    promo.start = now - 60_000;
++    promo.end = now + 4 * 60 * 60_000L;
++    promo.now = now;
++    promo.acceptanceRequired = true;
++    promo.acceptanceTarget = 80;
++    promo.acceptanceCurrent = -1;
++    promo.acceptanceObservedAt = now;
++
++    DecisionEngine.Result unknown =
++        DecisionEngine.evaluate(offer(160, 5, 15), values(600), session(), 2, null, promo);
++    assertFalse(unknown.promoFeasible);
++    assertTrue(unknown.promoTaUnverified);
++    assertFalse(unknown.accept);
++
++    promo.acceptanceCurrent = 84;
++    DecisionEngine.Result eligible =
++        DecisionEngine.evaluate(offer(160, 5, 15), values(600), session(), 2, null, promo);
++    assertTrue(eligible.promoFeasible);
++    assertTrue(eligible.promoTaRequired);
++    assertTrue(eligible.accept);
++  }
++
++  @Test
++  public void cancelActionIsNotTerminalButConfirmedCancellationIs() {
++    assertFalse(AssignmentSignals.isCancelledNormalized("cancelar viaje"));
++    assertTrue(AssignmentSignals.isAssignedNormalized("ruta al destino · cancelar viaje"));
++    assertTrue(AssignmentSignals.isCancelledNormalized("el pasajero canceló · viaje cancelado"));
++    assertTrue(AssignmentSignals.isCancelledNormalized("has cancelado el viaje"));
++    assertTrue(AssignmentSignals.isCancellationSemantic("jf_journey_cancelled_screen"));
++  }
+ }
