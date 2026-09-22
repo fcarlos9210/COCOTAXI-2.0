@@ -22,6 +22,7 @@ on:
       - 'cocotaxi-2.7.1-screen-promo-zone.patch.gz.b64.part*'
       - 'cocotaxi-2.7.2.patch.gz.b64'
       - 'cocotaxi-3.0.0-from272.patch.gz.b64.p*'
+      - 'cocotaxi-3.0.0-testfix.patch'
       - '.github/workflows/build-apk.yml'
 
 jobs:
@@ -127,6 +128,8 @@ jobs:
           base64 -d /tmp/coco300.b64 | gzip -dc > /tmp/coco300.patch
           echo "735cb58e997c04e744f070bae1749770f234cc95652cddab169e2b744137bdcb  /tmp/coco300.patch" | sha256sum -c -
           patch --batch -p1 -d "$PROJECT_DIR" < /tmp/coco300.patch
+          echo "4d4ff42bbbf2ce07005ebe436df95910ae02cc7c01be5ea28b5f0bb8b92c082e  cocotaxi-3.0.0-testfix.patch" | sha256sum -c -
+          patch --batch -p1 -d "$PROJECT_DIR" < cocotaxi-3.0.0-testfix.patch
 
       - name: Set up Java 17
         uses: actions/setup-java@v5
