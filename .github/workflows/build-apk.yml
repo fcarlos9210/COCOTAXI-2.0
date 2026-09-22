@@ -1,19 +1,14 @@
-name: Build COCOTAXI APK
+name: Build COCOTAXI 2.8.0 APK
 
 on:
   workflow_dispatch:
   push:
+    branches:
+      - build-cocotaxi-2.8.0
     paths:
-      - 'COCOTAXI_2.4.2_sesion_icono_sin_espera_fuentes.zip'
-      - 'cocotaxi-2.4.3.patch.gz.b64'
-      - 'cocotaxi-2.4.4-app.patch.gz.b64'
-      - 'cocotaxi-2.4.5-app.patch.gz.b64.part*'
-      - 'cocotaxi-2.4.6-ui-pin.patch.gz.b64.part*'
-      - 'cocotaxi-2.4.7-compact-settings.patch.gz.b64.part*'
-      - 'prepare_project.sh'
+      - 'build_2.8.0/**'
       - '.github/workflows/build-apk.yml'
 
-# Reconstruct the verified source chain, test it and compile COCOTAXI 2.4.7.
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -27,47 +22,131 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Prepare exact 2.4.7 project
-        run: |
-          chmod +x prepare_project.sh
-          ./prepare_project.sh
-          echo "PROJECT_DIR=$GITHUB_WORKSPACE/COCOTAXI_2.4.7" >> "$GITHUB_ENV"
-          grep -n "versionName '2.4.7'" COCOTAXI_2.4.7/app/build.gradle
-          grep -n "versionCode 22" COCOTAXI_2.4.7/app/build.gradle
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
 
-      - name: Regression and PIN tests
+      - name: Install Android SDK 36
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Reconstruct COCOTAXI 2.8.0 source
+        shell: bash
         run: |
-          cd "$PROJECT_DIR"
-          chmod +x gradlew
-          ./gradlew --no-daemon testDebugUnitTest \
-            --tests com.cocotaxi.app.PinStoreTest \
-            --tests com.cocotaxi.app.StoreTest.photographedOriginConfirmsAssignmentOnlyOnce \
-            --tests com.cocotaxi.app.StoreTest.confirmedAcceptanceStartsLiveServiceAndIncomeImmediately \
-            --tests com.cocotaxi.app.StoreTest.driverCanRemoveAndRestoreDefaultTripConfirmation \
-            --tests com.cocotaxi.app.StoreTest.finishButtonNotCompletion \
-            --tests com.cocotaxi.app.StoreTest.completedExactlyOnce \
-            --tests com.cocotaxi.app.UiTest.iconMinimizesOnlyResumedCoco \
-            --tests com.cocotaxi.app.UiTest.fourTabsAndScreensRender
+          set -euo pipefail
+          unzip -q COCOTAXI_2.6.1_cruce_logica.zip
+
+          cat build_2.8.0/main_overlay.part{01..10}.b64 | tr -d '\n\r' | base64 -d > /tmp/overlay_truncated.zip
+          base64 -d build_2.8.0/overlay_local_tail.b64 >> /tmp/overlay_truncated.zip
+          echo "da909d39d21c638076f5198340849460bd737975703dc65a7783924d60cb040f  /tmp/overlay_truncated.zip" | sha256sum -c -
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import shutil, struct, zlib
+
+          data = Path('/tmp/overlay_truncated.zip').read_bytes()
+          out = Path('COCOTAXI_2.6.1_cruce_logica')
+          i = 0
+          count = 0
+
+          while i + 30 <= len(data):
+              sig = struct.unpack_from('<I', data, i)[0]
+              if sig != 0x04034B50:
+                  raise SystemExit(f'Unexpected ZIP signature {sig:#x} at offset {i}')
+
+              ver, flag, method, mt, md, crc, csize, usize, fnlen, exlen = struct.unpack_from('<HHHHHIIIHH', data, i + 4)
+              if flag & 8:
+                  raise SystemExit(f'Unsupported ZIP data descriptor at offset {i}')
+
+              name = data[i + 30:i + 30 + fnlen].decode('utf-8')
+              start = i + 30 + fnlen + exlen
+              compressed = data[start:start + csize]
+
+              if method == 0:
+                  raw = compressed
+              elif method == 8:
+                  raw = zlib.decompress(compressed, -15)
+              else:
+                  raise SystemExit(f'Unsupported compression method {method} for {name}')
+
+              if len(raw) != usize:
+                  raise SystemExit(f'Size mismatch for {name}: {len(raw)} != {usize}')
+
+              dest = out / name
+              if name.endswith('/'):
+                  dest.mkdir(parents=True, exist_ok=True)
+              else:
+                  dest.parent.mkdir(parents=True, exist_ok=True)
+                  dest.write_bytes(raw)
+
+              count += 1
+              i = start + csize
+
+          if i != len(data):
+              raise SystemExit(f'Overlay parse stopped at {i} of {len(data)} bytes')
+          if count != 43:
+              raise SystemExit(f'Expected 43 overlay files, extracted {count}')
+
+          print(f'Applied {count} verified COCOTAXI 2.8.0 overlay files')
+          PY
+
+          cat > COCOTAXI_2.6.1_cruce_logica/build.gradle <<'EOF'
+          plugins { id 'com.android.application' version '8.10.1' apply false }
+          EOF
+
+          cat > COCOTAXI_2.6.1_cruce_logica/gradle/wrapper/gradle-wrapper.properties <<'EOF'
+          distributionBase=GRADLE_USER_HOME
+          distributionPath=wrapper/dists
+          distributionUrl=https\://services.gradle.org/distributions/gradle-8.11.1-bin.zip
+          networkTimeout=10000
+          validateDistributionUrl=true
+          zipStoreBase=GRADLE_USER_HOME
+          zipStorePath=wrapper/dists
+          EOF
+
+          cat > COCOTAXI_2.6.1_cruce_logica/settings.gradle <<'EOF'
+          pluginManagement {
+              repositories {
+                  if (System.getenv('COCO_LOCAL_MAVEN')) maven { url = uri(System.getenv('COCO_LOCAL_MAVEN')) }
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  if (System.getenv('COCO_LOCAL_MAVEN')) maven { url = uri(System.getenv('COCO_LOCAL_MAVEN')) }
+                  google()
+                  mavenCentral()
+              }
+          }
+
+          rootProject.name = 'COCOTAXI'
+          include ':app'
+          EOF
+
+          grep -n "versionName '2.8.0'" COCOTAXI_2.6.1_cruce_logica/app/build.gradle
+          grep -n "versionCode 36" COCOTAXI_2.6.1_cruce_logica/app/build.gradle
+          echo "PROJECT_DIR=$GITHUB_WORKSPACE/COCOTAXI_2.6.1_cruce_logica" >> "$GITHUB_ENV"
 
       - name: Build debug APK
+        shell: bash
         run: |
+          set -euo pipefail
           cd "$PROJECT_DIR"
+          chmod +x gradlew
           ./gradlew --no-daemon assembleDebug
 
-      - name: Package auditable source
+      - name: Package APK
+        shell: bash
         run: |
-          zip -qr COCOTAXI_2.4.7_fuentes.zip COCOTAXI_2.4.7
+          set -euo pipefail
+          cp "$PROJECT_DIR"/app/build/outputs/apk/debug/*.apk COCOTAXI_2.8.0_debug.apk
+          sha256sum COCOTAXI_2.8.0_debug.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: COCOTAXI-2.4.7-debug-apk
-          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/*.apk
-          if-no-files-found: error
-
-      - name: Upload source
-        uses: actions/upload-artifact@v4
-        with:
-          name: COCOTAXI-2.4.7-source
-          path: COCOTAXI_2.4.7_fuentes.zip
+          name: COCOTAXI-2.8.0-debug-apk
+          path: COCOTAXI_2.8.0_debug.apk
           if-no-files-found: error
