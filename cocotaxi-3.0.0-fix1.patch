@@ -1,0 +1,50 @@
+--- a/app/src/main/java/com/cocotaxi/app/CocotaxiAccessibilityService.java
++++ b/app/src/main/java/com/cocotaxi/app/CocotaxiAccessibilityService.java
+@@ -660,11 +660,6 @@
+         String text = tree.text;
+         String normalized = OfferParser.normalize(text);
+         diagnosticDetail = treeDiagnostic(tree, normalized, "Árbol accesible", -1);
+-        if ((normalized.contains("tasa de aceptacion") || normalized.matches("(?s).*\\bta\\b.*"))
+-            && PromotionStore.observeCabifyText(this, normalized)) {
+-          cachedPromoAt = 0L;
+-          diagnostic = "Requisito TA leído de la promoción";
+-        }
+         boolean assigned =
+             AssignmentSignals.isAssignedNormalized(normalized) || tree.journeySemantic;
+         CocoStore.Trip trip = tripSnapshot(store, session);
+@@ -1073,13 +1068,6 @@
+                         + " · texto visible "
+                         + normalized.length()
+                         + " caracteres\nNo se guardan direcciones ni datos del pasajero.";
+-                if ((normalized.contains("tasa de aceptacion")
+-                        || normalized.matches("(?s).*\\bta\\b.*"))
+-                    && PromotionStore.observeCabifyText(
+-                        CocotaxiAccessibilityService.this, normalized)) {
+-                  cachedPromoAt = 0L;
+-                  diagnostic = "Requisito TA leído por OCR";
+-                }
+                 SettingsStore.Values settings =
+                     SettingsStore.load(CocotaxiAccessibilityService.this);
+ 
+@@ -1095,10 +1083,10 @@
+                   lastMapVisionAt = wallNow;
+                   String currentZone = zoneVision.currentZoneKey();
+                   if (!currentZone.isEmpty()) {
+-                    CocoLearningStore.get(this).updateCurrentZone(currentZone);
++                    CocoLearningStore.get(CocotaxiAccessibilityService.this).updateCurrentZone(currentZone);
+                     if (wallNow - lastExposureAt >= 30000L) {
+                       int heat = Math.max(visual, textual);
+-                      CocoLearningStore.get(this)
++                      CocoLearningStore.get(CocotaxiAccessibilityService.this)
+                           .recordExposure(currentZone, heat, zoneVision.currentSurge(), .5);
+                       lastExposureAt = wallNow;
+                     }
+@@ -1156,7 +1144,7 @@
+                   PromotionStore.Snapshot promo = promotionSnapshot(store, s);
+                   DecisionEngine.Result result = best(cards, settings, s, demand, promo);
+                   if (result != null) {
+-                    CocoLearningStore.get(this)
++                    CocoLearningStore.get(CocotaxiAccessibilityService.this)
+                         .recordOffer(
+                             s.id, result.offer, result, zoneVision.currentZoneKey(), demand,
+                             result.promoCredit, false, "ocr");
