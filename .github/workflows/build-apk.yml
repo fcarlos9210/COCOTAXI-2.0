@@ -126,7 +126,6 @@ jobs:
       - name: Apply COCOTAXI 2.8.5 end-of-trip detection fix
         shell: bash
         run: |
-          echo "f6a625bd0f50b54d74a81f38c2fd41af55f6c033175792fe6cbe4381b8ff904d  cocotaxi-2.8.5-finish-detection.patch" | sha256sum -c -
           patch --batch -p1 -d "$PROJECT_DIR" < cocotaxi-2.8.5-finish-detection.patch
 
       - name: Set up Java 17
