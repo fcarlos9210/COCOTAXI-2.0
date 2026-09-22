@@ -1,0 +1,72 @@
+name: Build COCOTAXI 2.8.0
+
+on:
+  push:
+    branches:
+      - build-cocotaxi-2.8.0-20260922
+    paths:
+      - '.github/workflows/build-2.8.0.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout build branch
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Reconstruct exact 2.8.0 compile sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf work
+          mkdir -p work
+          unzip -q COCOTAXI_2.6.1_cruce_logica.zip -d work
+          cat build-2.8.0/compile.patch.gz.b64.part* | base64 -d > /tmp/coco_compile.patch.gz
+          echo "e31747833f76a998aa3ea6595f31c93db2d84a8c73257a3ec50bd91667b7e0fd  /tmp/coco_compile.patch.gz" | sha256sum -c -
+          gzip -dc /tmp/coco_compile.patch.gz > /tmp/coco_compile.patch
+          cd work/COCOTAXI_2.6.1_cruce_logica
+          patch -p1 < /tmp/coco_compile.patch
+          grep -F "versionCode 36" app/build.gradle
+          grep -F "versionName '2.8.0'" app/build.gradle
+
+      - name: Ensure Android SDK 36
+        shell: bash
+        run: |
+          set -e
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Build debug APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd work/COCOTAXI_2.6.1_cruce_logica
+          chmod +x gradlew
+          ./gradlew --no-daemon :app:assembleDebug
+
+      - name: Verify APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="work/COCOTAXI_2.6.1_cruce_logica/app/build/outputs/apk/debug/app-debug.apk"
+          test -s "$APK"
+          ls -lh "$APK"
+          sha256sum "$APK" | tee /tmp/COCOTAXI-2.8.0-debug.apk.sha256
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: COCOTAXI-2.8.0-debug-apk
+          path: |
+            work/COCOTAXI_2.6.1_cruce_logica/app/build/outputs/apk/debug/app-debug.apk
+            /tmp/COCOTAXI-2.8.0-debug.apk.sha256
+          if-no-files-found: error
+          retention-days: 30
