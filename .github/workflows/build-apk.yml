@@ -21,6 +21,7 @@ on:
       - 'cocotaxi-2.7.0.patch.gz.b64.part*'
       - 'cocotaxi-2.7.1-screen-promo-zone.patch.gz.b64.part*'
       - 'cocotaxi-3.1-core.patch.gz.b64.part*'
+      - 'cocotaxi-3.1-core-hotfix.patch'
       - '.github/workflows/build-apk.yml'
 
 jobs:
@@ -118,6 +119,12 @@ jobs:
           base64 -d /tmp/coco31.b64 | gzip -dc > /tmp/coco31.patch
           echo "994a9698478a4ea10a7d3f6559a88eec4d878a0deb1851151479ec551e481aeb  /tmp/coco31.patch" | sha256sum -c -
           patch --batch -p1 -d "$PROJECT_DIR" < /tmp/coco31.patch
+
+      - name: Apply COCOTAXI 3.1 Core recovery hotfix
+        shell: bash
+        run: |
+          echo "f10b6a000dbf072f348da6cc4773258ef99b8e3353cc30f2d99a8dcaf926872c  cocotaxi-3.1-core-hotfix.patch" | sha256sum -c -
+          patch --batch -p1 -d "$PROJECT_DIR" < cocotaxi-3.1-core-hotfix.patch
 
       - name: Set up Java 17
         uses: actions/setup-java@v5
