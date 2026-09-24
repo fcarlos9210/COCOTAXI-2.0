@@ -131,7 +131,6 @@ jobs:
       - name: Apply COCOTAXI 3.4.2 autoaccept parser queue and stability fixes
         shell: bash
         run: |
-          echo "176abe70d354e11527df88377d31332054a92631d54d729d22368873be7c8443  cocotaxi-3.4.2-fixes.patch.gz.b64" | sha256sum -c -
           base64 -d cocotaxi-3.4.2-fixes.patch.gz.b64 | gzip -dc > /tmp/coco342.patch
           echo "28c2c0cf5120c8d94c82c52442f9ce5301e11c47365a1631773117e7a046fdcf  /tmp/coco342.patch" | sha256sum -c -
           patch --batch -p1 -d "$PROJECT_DIR" < /tmp/coco342.patch
