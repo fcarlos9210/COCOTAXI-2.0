@@ -1,0 +1,13 @@
+--- a/app/src/main/java/com/cocotaxi/app/OfferParser.java
++++ b/app/src/main/java/com/cocotaxi/app/OfferParser.java
+@@ -126,8 +126,8 @@
+       String around = s.substring(Math.max(0, m.start() - 32), Math.min(s.length(), m.end() + 40));
+       // Direct adjacency is strong evidence. This distinguishes "$392 para ti" from a wallet
+       // balance that merely happens to be earlier on the same flattened accessibility line.
+-      if (after.matches("(?s)^\s*(?:para ti|en app)\b.*")
+-          || before.matches("(?s).*(?:para ti|en app)\s*$")) score += 16;
++      if (after.matches("(?s)^\\s*(?:para ti|en app)\\b.*")
++          || before.matches("(?s).*(?:para ti|en app)\\s*$")) score += 16;
+       else {
+         if (around.contains("para ti")) score += 4;
+         if (around.contains("en app")) score += 3;
