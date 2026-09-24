@@ -1,4 +1,4 @@
-name: Build COCOTAXI 3.4.1 FINAL
+name: Build COCOTAXI 3.4.2 FINAL
 
 on:
   workflow_dispatch:
@@ -22,6 +22,7 @@ on:
       - 'cocotaxi-2.7.1-screen-promo-zone.patch.gz.b64.part*'
       - 'cocotaxi-3.4.0.patch.gz.b64'
       - 'cocotaxi-3.4.1-fixes.patch.gz.b64'
+      - 'cocotaxi-3.4.2.patch.gz.b64.part*'
       - '.github/workflows/build-apk.yml'
 
 jobs:
@@ -127,6 +128,15 @@ jobs:
           echo "64737e0b63142bc3d627b3f88daed5e0fd9ae2a4aae067e2bccb4c1d89cfca42  /tmp/coco341.patch" | sha256sum -c -
           patch --batch -p1 -d "$PROJECT_DIR" < /tmp/coco341.patch
 
+      - name: Apply COCOTAXI 3.4.2 sequential-trip overlay and finish fixes
+        shell: bash
+        run: |
+          cat cocotaxi-3.4.2.patch.gz.b64.part{1,2} > /tmp/coco342.b64
+          echo "aabe1ce480f21bcbeec07d530afd25facf09b11ad9c934fc1887cc42f2fb2fbb  /tmp/coco342.b64" | sha256sum -c -
+          base64 -d /tmp/coco342.b64 | gzip -dc > /tmp/coco342.patch
+          echo "965a51332eb20a5ef7087f1321805cd5beaa943077c7ca5cd107cc455eba7240  /tmp/coco342.patch" | sha256sum -c -
+          patch --batch -p1 -d "$PROJECT_DIR" < /tmp/coco342.patch
+
       - name: Set up Java 17
         uses: actions/setup-java@v5
         with:
@@ -136,8 +146,8 @@ jobs:
       - name: Verify final version and public license surface
         shell: bash
         run: |
-          grep -R "versionName '3.4.1'" "$PROJECT_DIR/app/build.gradle"
-          grep -R "versionCode 43" "$PROJECT_DIR/app/build.gradle"
+          grep -R "versionName '3.4.2'" "$PROJECT_DIR/app/build.gradle"
+          grep -R "versionCode 44" "$PROJECT_DIR/app/build.gradle"
           grep -R "cocotaxi-license-api.cocotaxi-licenses-alecandido998.workers.dev" "$PROJECT_DIR/app/src/main/java/com/cocotaxi/app/LicenseApiClient.java"
           ! grep -RE "/admin|ADMIN_PANEL_PASSWORD|X-Admin|adminToken" "$PROJECT_DIR/app/src/main/java/com/cocotaxi/app/LicenseApiClient.java"
           ! grep -RE "ACCESS_FINE_LOCATION|ACCESS_COARSE_LOCATION|ACCESS_BACKGROUND_LOCATION" "$PROJECT_DIR/app/src/main/AndroidManifest.xml"
@@ -145,6 +155,9 @@ jobs:
           grep -R "Download/datos/" "$PROJECT_DIR/app/src/main/java/com/cocotaxi/app/CocoDataArchive.java"
           grep -R "DÓNDE IR" "$PROJECT_DIR/app/src/main/java/com/cocotaxi/app/MainActivity.java"
           ! grep -R "postDelayed(this, 100)" "$PROJECT_DIR/app/src/main/java/com/cocotaxi/app/CocotaxiAccessibilityService.java"
+          grep -R "EN_COLA" "$PROJECT_DIR/app/src/main/java/com/cocotaxi/app/CocoStore.java"
+          grep -R "FrameLayout bubble" "$PROJECT_DIR/app/src/main/java/com/cocotaxi/app/CocotaxiOverlayService.java"
+          grep -R "Verificar carpeta datos" "$PROJECT_DIR/app/src/main/java/com/cocotaxi/app/MainActivity.java"
 
       - name: Run complete unit test suite
         shell: bash
@@ -163,18 +176,18 @@ jobs:
         shell: bash
         run: |
           cd "$(dirname "$PROJECT_DIR")"
-          zip -qr COCOTAXI_3.4.1_fuentes.zip "$(basename "$PROJECT_DIR")"
+          zip -qr COCOTAXI_3.4.2_fuentes.zip "$(basename "$PROJECT_DIR")"
 
-      - name: Upload COCOTAXI 3.4.1 APK
+      - name: Upload COCOTAXI 3.4.2 APK
         uses: actions/upload-artifact@v4
         with:
-          name: COCOTAXI-3.4.1-debug-apk
+          name: COCOTAXI-3.4.2-debug-apk
           path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
 
-      - name: Upload COCOTAXI 3.4.1 source
+      - name: Upload COCOTAXI 3.4.2 source
         uses: actions/upload-artifact@v4
         with:
-          name: COCOTAXI-3.4.1-source
-          path: build-2.6.6/COCOTAXI_3.4.1_fuentes.zip
+          name: COCOTAXI-3.4.2-source
+          path: build-2.6.6/COCOTAXI_3.4.2_fuentes.zip
           if-no-files-found: error
