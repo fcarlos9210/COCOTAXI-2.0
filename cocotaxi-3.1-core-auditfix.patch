@@ -1,0 +1,192 @@
+--- a/app/src/main/java/com/cocotaxi/app/CocotaxiAccessibilityService.java
++++ b/app/src/main/java/com/cocotaxi/app/CocotaxiAccessibilityService.java
+@@ -33,7 +33,6 @@
+   private long recentOcrAt, lastUnambiguousAt;
+   private String detailSession = "", lastOfferSession = "";
+   private long detailAt;
+-  private boolean assignmentSeen;
+   private long assignmentWithoutOfferAt;
+   private long lastMapCaptureAt, lastJourneyEvidenceAt, passiveFinishMapSeenAt, finishClickedAt;
+   private long finishActionVisibleAt;
+@@ -65,7 +64,6 @@
+     detailAt = SystemClock.elapsedRealtime();
+     detailSession = cachedSession != null ? cachedSession.id : CocoStore.get(this).session().id;
+     cacheUnambiguous(recentDetail);
+-    assignmentSeen = false;
+   }
+ 
+   private void cacheUnambiguous(Offer offer) {
+@@ -77,8 +75,7 @@
+ 
+   private void observeAssignment(
+       String normalized, boolean assigned, CocoStore store, CocoStore.Session session, CocoStore.Trip trip) {
+-    if (assigned && !assignmentSeen) {
+-      assignmentSeen = true;
++    if (assigned && trip == null) {
+       long now = SystemClock.elapsedRealtime();
+       Offer candidate = null;
+       if (recentDetail != null && session.id.equals(detailSession) && now - detailAt <= 60000)
+@@ -98,7 +95,6 @@
+         if (candidate == null) {
+           if (assignmentWithoutOfferAt == 0L) assignmentWithoutOfferAt = now;
+           if (now - assignmentWithoutOfferAt < 1500L) {
+-            assignmentSeen = false;
+             diagnostic = "Viaje aceptado detectado · confirmando importe";
+             return;
+           }
+@@ -125,6 +121,8 @@
+       recentDetail = null;
+       recentOcrOffer = null;
+       lastUnambiguousOffer = null;
++    } else if (!assigned || trip != null) {
++      assignmentWithoutOfferAt = 0L;
+     }
+ 
+     // Avoid the old session + active-trip database round-trip on every 150 ms map poll.
+--- a/app/src/main/java/com/cocotaxi/app/CocoStore.java
++++ b/app/src/main/java/com/cocotaxi/app/CocoStore.java
+@@ -309,6 +309,7 @@
+     Session s = session();
+     if (!s.active) return;
+     checkpointRemainder(s);
++    checkpointActiveService(s.id, false);
+     ContentValues v = new ContentValues();
+     v.put("active", 0);
+     v.put("paused", 0);
+@@ -503,7 +504,7 @@
+         v.put("accepted_boot", boot());
+       }
+       changed = db.update("trips", v, "id=?", new String[] {id}) == 1;
+-      if (changed && "ASIGNADO".equals(t.status)) promoteNext(db);
++      if (changed && "ASIGNADO".equals(t.status)) promoteNext(db, t.session);
+       db.setTransactionSuccessful();
+     } finally {
+       db.endTransaction();
+@@ -562,7 +563,8 @@
+     if (AssignmentSignals.isAssignedNormalized(text) || AssignmentSignals.looksFinishAction(text)) {
+       double recovered = Math.max(0, t.minutes);
+       if (t.acceptedWall > 0) {
+-        long delta = System.currentTimeMillis() - t.acceptedWall;
++        long lastWall = sessionWall(s.id);
++        long delta = lastWall - t.acceptedWall;
+         if (delta > 0) recovered += delta / 60000.0;
+       }
+       ContentValues v = new ContentValues();
+@@ -578,6 +580,15 @@
+     return false;
+   }
+ 
++  private long sessionWall(String sessionId) {
++    if (sessionId == null || sessionId.isEmpty()) return 0;
++    try (Cursor q =
++        getReadableDatabase().rawQuery(
++            "SELECT wall FROM sessions WHERE id=? LIMIT 1", new String[] {sessionId})) {
++      return q.moveToFirst() ? q.getLong(0) : 0;
++    }
++  }
++
+   private void resumeSessionAfterRecovery(String sessionId) {
+     ContentValues v = new ContentValues();
+     v.put("paused", 0);
+@@ -607,7 +618,7 @@
+     db.beginTransaction();
+     try {
+       db.update("trips", v, "id=? AND status='ASIGNADO'", new String[] {id});
+-      promoteNext(db);
++      promoteNext(db, t.session);
+       db.setTransactionSuccessful();
+     } finally {
+       db.endTransaction();
+@@ -617,11 +628,11 @@
+   }
+ 
+   /** Starts an already accepted consecutive ride only after the current ride ends. */
+-  private void promoteNext(SQLiteDatabase db) {
++  private void promoteNext(SQLiteDatabase db, String sessionId) {
+     try (Cursor q =
+         db.rawQuery(
+-            "SELECT id FROM trips WHERE deleted=0 AND status='SIGUIENTE' ORDER BY at ASC LIMIT 1",
+-            null)) {
++            "SELECT id FROM trips WHERE session=? AND deleted=0 AND status='SIGUIENTE' ORDER BY at ASC LIMIT 1",
++            new String[] {sessionId})) {
+       if (!q.moveToFirst()) return;
+       ContentValues next = new ContentValues();
+       next.put("status", "ASIGNADO");
+@@ -818,12 +829,14 @@
+   public Trip activeTrip() {
+     ContentValues expired = new ContentValues();
+     expired.put("status", "SIN CONFIRMAR");
+-    getWritableDatabase()
+-        .update(
+-            "trips",
+-            expired,
+-            "status='INTENTO' AND at<?",
+-            new String[] {"" + (System.currentTimeMillis() - 45000)});
++    int expiredCount =
++        getWritableDatabase()
++            .update(
++                "trips",
++                expired,
++                "status='INTENTO' AND at<?",
++                new String[] {"" + (System.currentTimeMillis() - 45000)});
++    if (expiredCount > 0) touch();
+     Session current = session();
+     List<Trip> ts =
+         query(
+@@ -835,12 +848,14 @@
+   public Trip nextTrip() {
+     ContentValues expired = new ContentValues();
+     expired.put("status", "SIN CONFIRMAR");
+-    getWritableDatabase()
+-        .update(
+-            "trips",
+-            expired,
+-            "status='INTENTO_SIGUIENTE' AND at<?",
+-            new String[] {"" + (System.currentTimeMillis() - 45000)});
++    int expiredCount =
++        getWritableDatabase()
++            .update(
++                "trips",
++                expired,
++                "status='INTENTO_SIGUIENTE' AND at<?",
++                new String[] {"" + (System.currentTimeMillis() - 45000)});
++    if (expiredCount > 0) touch();
+     Session current = session();
+     List<Trip> ts =
+         query(
+--- a/app/src/test/java/com/cocotaxi/app/StoreTest.java
++++ b/app/src/test/java/com/cocotaxi/app/StoreTest.java
+@@ -377,6 +377,33 @@
+     assertFalse(st.session().paused);
+     assertEquals("ASIGNADO", st.find(old).status);
+     assertTrue(st.session().service >= 0);
++  }
++
++  @Test
++  public void rebootRecoveryDoesNotCountDeviceDowntimeAsService() {
++    String id = attempt();
++    assertTrue(st.confirmAccepted(id));
++    ShadowSystemClock.advanceBy(Duration.ofMinutes(5));
++    st.session(); // persists the last known wall/monotonic checkpoint
++    android.provider.Settings.Global.putInt(
++        c.getContentResolver(), android.provider.Settings.Global.BOOT_COUNT, 1777);
++    ShadowSystemClock.advanceBy(Duration.ofMinutes(20));
++    assertTrue(st.session().paused);
++    assertTrue(st.recoverFromCabify("Viaje en curso Finalizar viaje"));
++    CocoStore.Session recovered = st.session();
++    assertEquals(5, recovered.service, .05);
++    assertEquals("ASIGNADO", st.find(id).status);
++  }
++
++  @Test
++  public void stopPreservesActiveServiceBeforeInvalidatingTrip() {
++    String id = attempt();
++    assertTrue(st.confirmAccepted(id));
++    ShadowSystemClock.advanceBy(Duration.ofMinutes(7));
++    st.stop();
++    CocoStore.Trip trip = st.find(id);
++    assertEquals("SIN CONFIRMAR", trip.status);
++    assertEquals(7, trip.minutes, .05);
+   }
+ 
+   @Test
