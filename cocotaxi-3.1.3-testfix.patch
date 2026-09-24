@@ -1,0 +1,25 @@
+--- a/app/src/test/java/com/cocotaxi/app/StoreTest.java
++++ b/app/src/test/java/com/cocotaxi/app/StoreTest.java
+@@ -416,8 +416,14 @@
+   public void expiringAttemptInvalidatesRevisionAndRemovesActiveAttempt() {
+     String id = attempt();
+     assertNotNull(id);
++    // Age the persisted wall-clock timestamp directly. Robolectric's monotonic
++    // ShadowSystemClock is not a reliable proxy for System.currentTimeMillis().
++    st.getWritableDatabase()
++        .execSQL(
++            "UPDATE trips SET at=? WHERE id=?",
++            new Object[] {System.currentTimeMillis() - 46000L, id});
+     long before = st.revision();
+-    ShadowSystemClock.advanceBy(Duration.ofSeconds(46));
+     assertNull(st.activeTrip());
+     assertEquals("SIN CONFIRMAR", st.find(id).status);
+     assertTrue(st.revision() > before);
+@@ -643,7 +649,7 @@
+     CocoStore.closeForTests();
+     st = CocoStore.get(c);
+     assertEquals(200, st.session().money, .001);
+-    assertEquals(5, st.getReadableDatabase().getVersion());
++    assertEquals(6, st.getReadableDatabase().getVersion());
+     assertTrue(st.dailyCalibration().provisional);
+   }
