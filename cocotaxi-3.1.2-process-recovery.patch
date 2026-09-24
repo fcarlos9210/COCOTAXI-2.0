@@ -1,0 +1,60 @@
+diff -ruN '--exclude=.gradle' '--exclude=build' a/app/build.gradle b/app/build.gradle
+--- a/app/build.gradle
++++ b/app/build.gradle
+@@ -10,8 +10,8 @@
+         applicationId 'com.cocotaxi.app'
+         minSdk 26
+         targetSdk 36
+-        versionCode 51
+-        versionName '3.1.1'
++        versionCode 52
++        versionName '3.1.2'
+     }
+ 
+     compileOptions {
+diff -ruN '--exclude=.gradle' '--exclude=build' a/app/src/main/java/com/cocotaxi/app/CocoStore.java b/app/src/main/java/com/cocotaxi/app/CocoStore.java
+--- a/app/src/main/java/com/cocotaxi/app/CocoStore.java
++++ b/app/src/main/java/com/cocotaxi/app/CocoStore.java
+@@ -31,7 +31,13 @@
+   }
+ 
+   public static synchronized CocoStore get(Context c) {
+-    if (instance == null) instance = new CocoStore(c);
++    if (instance == null) {
++      instance = new CocoStore(c);
++      // A fresh process must freeze a persisted active ride before any caller can advance
++      // session()/En servicio using stale monotonic anchors. This closes the race where the
++      // Activity opens before AccessibilityService.onServiceConnected().
++      instance.beginRecovery();
++    }
+     return instance;
+   }
+ 
+diff -ruN '--exclude=.gradle' '--exclude=build' a/app/src/test/java/com/cocotaxi/app/StoreTest.java b/app/src/test/java/com/cocotaxi/app/StoreTest.java
+--- a/app/src/test/java/com/cocotaxi/app/StoreTest.java
++++ b/app/src/test/java/com/cocotaxi/app/StoreTest.java
+@@ -396,6 +396,24 @@
+   }
+ 
+   @Test
++  public void firstStoreOpenAfterProcessDeathFreezesRideBeforeSessionRead() {
++    String id = attempt();
++    assertTrue(st.confirmAccepted(id));
++    ShadowSystemClock.advanceBy(Duration.ofMinutes(5));
++    st.session();
++    CocoStore.closeForTests();
++    ShadowSystemClock.advanceBy(Duration.ofMinutes(20));
++
++    st = CocoStore.get(c); // first access in the simulated fresh process
++    CocoStore.Session frozen = st.session();
++    assertTrue(frozen.paused);
++    assertTrue(frozen.recovering);
++    assertEquals(5, frozen.service, .05);
++    assertTrue(st.recoverFromCabify("Viaje en curso Finalizar viaje"));
++    assertEquals(5, st.session().service, .05);
++  }
++
++  @Test
+   public void rebootRecoveryDoesNotCountDeviceDowntimeAsService() {
+     String id = attempt();
+     assertTrue(st.confirmAccepted(id));
