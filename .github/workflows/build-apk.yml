@@ -22,6 +22,7 @@ on:
       - 'cocotaxi-2.7.1-screen-promo-zone.patch.gz.b64.part*'
       - 'cocotaxi-3.1-core.patch.gz.b64.part*'
       - 'cocotaxi-3.1-core-hotfix.patch'
+      - 'cocotaxi-3.1-core-auditfix.patch'
       - '.github/workflows/build-apk.yml'
 
 jobs:
@@ -125,6 +126,12 @@ jobs:
         run: |
           echo "e9fde531055758cb73cd314e544670530402f7a0f959db0551452bc893cc91f7  cocotaxi-3.1-core-hotfix.patch" | sha256sum -c -
           patch --batch -p1 -d "$PROJECT_DIR" < cocotaxi-3.1-core-hotfix.patch
+
+      - name: Apply COCOTAXI 3.1 Core audit fixes
+        shell: bash
+        run: |
+          echo "16bddbf59d062a159927549f108165df945aae62b08b5bfcacff7d89ebd89f72  cocotaxi-3.1-core-auditfix.patch" | sha256sum -c -
+          patch --batch -p1 -d "$PROJECT_DIR" < cocotaxi-3.1-core-auditfix.patch
 
       - name: Set up Java 17
         uses: actions/setup-java@v5
