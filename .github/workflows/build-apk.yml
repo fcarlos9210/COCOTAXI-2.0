@@ -22,7 +22,7 @@ on:
       - 'cocotaxi-2.7.1-screen-promo-zone.patch.gz.b64.part*'
       - 'cocotaxi-3.4.0.patch.gz.b64'
       - 'cocotaxi-3.4.1-fixes.patch.gz.b64'
-      - 'cocotaxi-3.4.2.patch.gz.b64.part*'
+      - 'cocotaxi-3.4.2-fixes.patch.gz.b64'
       - '.github/workflows/build-apk.yml'
 
 jobs:
@@ -128,13 +128,12 @@ jobs:
           echo "64737e0b63142bc3d627b3f88daed5e0fd9ae2a4aae067e2bccb4c1d89cfca42  /tmp/coco341.patch" | sha256sum -c -
           patch --batch -p1 -d "$PROJECT_DIR" < /tmp/coco341.patch
 
-      - name: Apply COCOTAXI 3.4.2 sequential-trip overlay and finish fixes
+      - name: Apply COCOTAXI 3.4.2 autoaccept parser queue and stability fixes
         shell: bash
         run: |
-          cat cocotaxi-3.4.2.patch.gz.b64.part{1,2} > /tmp/coco342.b64
-          echo "aabe1ce480f21bcbeec07d530afd25facf09b11ad9c934fc1887cc42f2fb2fbb  /tmp/coco342.b64" | sha256sum -c -
-          base64 -d /tmp/coco342.b64 | gzip -dc > /tmp/coco342.patch
-          echo "965a51332eb20a5ef7087f1321805cd5beaa943077c7ca5cd107cc455eba7240  /tmp/coco342.patch" | sha256sum -c -
+          echo "176abe70d354e11527df88377d31332054a92631d54d729d22368873be7c8443  cocotaxi-3.4.2-fixes.patch.gz.b64" | sha256sum -c -
+          base64 -d cocotaxi-3.4.2-fixes.patch.gz.b64 | gzip -dc > /tmp/coco342.patch
+          echo "28c2c0cf5120c8d94c82c52442f9ce5301e11c47365a1631773117e7a046fdcf  /tmp/coco342.patch" | sha256sum -c -
           patch --batch -p1 -d "$PROJECT_DIR" < /tmp/coco342.patch
 
       - name: Set up Java 17
@@ -155,9 +154,10 @@ jobs:
           grep -R "Download/datos/" "$PROJECT_DIR/app/src/main/java/com/cocotaxi/app/CocoDataArchive.java"
           grep -R "DÓNDE IR" "$PROJECT_DIR/app/src/main/java/com/cocotaxi/app/MainActivity.java"
           ! grep -R "postDelayed(this, 100)" "$PROJECT_DIR/app/src/main/java/com/cocotaxi/app/CocotaxiAccessibilityService.java"
-          grep -R "EN_COLA" "$PROJECT_DIR/app/src/main/java/com/cocotaxi/app/CocoStore.java"
-          grep -R "FrameLayout bubble" "$PROJECT_DIR/app/src/main/java/com/cocotaxi/app/CocotaxiOverlayService.java"
-          grep -R "Verificar carpeta datos" "$PROJECT_DIR/app/src/main/java/com/cocotaxi/app/MainActivity.java"
+          grep -R "ENCADENADO" "$PROJECT_DIR/app/src/main/java/com/cocotaxi/app/CocoStore.java"
+          grep -R "recordAction" "$PROJECT_DIR/app/src/main/java/com/cocotaxi/app/CocoBrain.java"
+          grep -R "flagIncludeNotImportantViews" "$PROJECT_DIR/app/src/main/res/xml/accessibility_config.xml"
+          ! grep -R "Confirma el factor de pago en Ajustes" "$PROJECT_DIR/app/src/main/java/com/cocotaxi/app/DecisionEngine.java"
 
       - name: Run complete unit test suite
         shell: bash
