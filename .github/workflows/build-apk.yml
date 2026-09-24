@@ -23,6 +23,7 @@ on:
       - 'cocotaxi-3.4.0.patch.gz.b64'
       - 'cocotaxi-3.4.1-fixes.patch.gz.b64'
       - 'cocotaxi-3.4.3-recovery.patch.gz.b64'
+      - 'cocotaxi-3.4.3-parser-hotfix.patch'
       - '.github/workflows/build-apk.yml'
 
 jobs:
@@ -135,6 +136,12 @@ jobs:
           base64 -d cocotaxi-3.4.3-recovery.patch.gz.b64 | gzip -dc > /tmp/coco343.patch
           echo "36e8320dd25692ba9fb103b34682665fb090a586fa87fccad9d48cc51e37cb23  /tmp/coco343.patch" | sha256sum -c -
           patch --batch -p1 -d "$PROJECT_DIR" < /tmp/coco343.patch
+
+      - name: Apply COCOTAXI 3.4.3 parser hotfix
+        shell: bash
+        run: |
+          echo "87178322345139786ee299e70341cb8852ffd820a4c8386260a46de6cc9e392c  cocotaxi-3.4.3-parser-hotfix.patch" | sha256sum -c -
+          patch --batch -p1 -d "$PROJECT_DIR" < cocotaxi-3.4.3-parser-hotfix.patch
 
       - name: Set up Java 17
         uses: actions/setup-java@v5
