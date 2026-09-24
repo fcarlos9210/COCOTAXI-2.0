@@ -6,7 +6,7 @@ Fecha: 24 de septiembre de 2026
 
 COCOTAXI 3.1 Core se reconstruye exclusivamente desde la rama `archive/cocotaxi-2.7.1-known-good`, commit base `8b221441eecdb0ce1684b82704a17fc762588414`.
 
-La candidata auditada final es **3.1.2** (`versionCode 52`). Esta etapa modifica únicamente el núcleo operativo de Coco. No implementa todavía la nueva arquitectura Data, Atlas, Learning ni Advisor.
+La candidata auditada final es **3.1.3** (`versionCode 53`). Esta etapa modifica únicamente el núcleo operativo de Coco. No implementa todavía la nueva arquitectura Data, Atlas, Learning ni Advisor.
 
 Quedan expresamente fuera de 3.1 Core:
 
@@ -81,6 +81,19 @@ La deduplicación depende ahora del viaje activo y de las evidencias recientes d
 
 Si Cabify cambia de pantalla demasiado rápido, Coco puede reutilizar sólo una oferta individual reciente y suficientemente completa. No reutiliza una lista ambigua.
 
+### Viajes manuales y consistencia de sesión (3.1.3)
+
+La auditoría de campo detectó un error importante en el registro manual. En 3.1.2, al añadir un viaje manual mientras la sesión estaba corriendo, Coco podía sumar el dinero y los minutos de servicio sin sumar esos mismos minutos a `Conectado`. Si la sesión acababa de empezar, el denominador horario quedaba casi en cero y el promedio podía dispararse artificialmente a decenas de miles de pesos por hora.
+
+En 3.1.3:
+
+- ningún registro de viaje puede insertarse sin una sesión existente; además de las validaciones de la API, SQLite tiene el trigger `trips_require_session`;
+- un viaje manual de N minutos añade **de golpe N minutos a En servicio y N minutos a Conectado**;
+- un viaje manual se guarda como `FINALIZADO`, con `accepted=0`, y **nunca enciende un viaje vivo ni un cronómetro ASIGNADO**;
+- por ejemplo, una sesión recién iniciada con un viaje manual de $200 y 10 minutos queda en 10 min conectados, 10 min de servicio y aproximadamente $1.200/h, no en valores artificiales de más de $36.000/h;
+- corregir después los minutos de ese viaje ajusta también Conectado por la diferencia;
+- una entrada marcada como extra/bono suma dinero pero no añade minutos a En servicio ni a Conectado.
+
 ### Parser monetario
 
 El parser evalúa cada importe individualmente en lugar de descartar una línea completa por contener `/h` o `/km`.
@@ -103,6 +116,19 @@ Existe una regresión automatizada basada en el caso real:
 `$392 para ti · $39/km · $1.383/h`
 
 y exige que el importe de la oferta sea **392**.
+
+### Correcciones adicionales del parser y Accessibility (3.1.3)
+
+A partir de la auditoría externa y la revisión del source se corrigieron además estos casos:
+
+- un único candidato monetario con puntaje negativo ya no se acepta por defecto; `Saldo $500` no puede convertirse en tarifa sólo por ser el único precio visible;
+- `parseVisible` admite una tarjeta en la que `Aceptar` aparece antes, en medio o después del importe y los tiempos;
+- la barra persistente `Inicio / Reservas / Promos / Billetera` ya no convierte por sí sola una pantalla de oferta en historial;
+- `cleanArea` recorta ruido de UI por fragmento en vez de descartar una línea aplanada completa, preservando recogida y destino del caso real de $392;
+- el recorrido del árbol Accessibility recicla hijos con `finally` y tolera nodos que caducan durante la lectura;
+- los nodos invisibles no consumen el presupuesto principal de nodos visibles y el límite visible se amplió;
+- un primer botón Aceptar no clicable ya no impide conservar un Aceptar posterior que sí tenga acción clicable;
+- un `RecyclerView` por sí solo ya no basta para declarar que la pantalla contiene una lista de ofertas.
 
 ### Rendimiento y Accessibility
 
@@ -130,7 +156,9 @@ La auditoría posterior a 3.1.0 no se limitó a comprobar que compilara. Encontr
 6. La primera estrategia de recuperación no cubría correctamente una muerte del proceso dentro del mismo arranque de Android.
 7. Existía una carrera si la Activity consultaba `session()` antes de que Accessibility se reconectara. En 3.1.2 la recuperación se arma en la primera apertura del store.
 
-Por estas razones, **3.1.0 y 3.1.1 quedan superadas por 3.1.2** como candidata Core auditada.
+Después de la auditoría de 3.1.2 se corrigieron además la asociación obligatoria viaje→sesión, el tiempo conectado de los viajes manuales, el cálculo horario disparado por denominador casi cero y varios casos de parser/Accessibility señalados en la revisión externa.
+
+Por estas razones, **3.1.0, 3.1.1 y 3.1.2 quedan superadas por 3.1.3** como candidata Core auditada.
 
 ## Pruebas automatizadas relevantes
 
@@ -149,6 +177,16 @@ La suite contiene regresiones para, entre otros casos:
 - promoción del siguiente viaje al finalizar el actual;
 - parser real de `$392 para ti`;
 - filtros de importes `$/km`, `$/h`, saldo y billetera;
+- viaje manual de $200/10 min al inicio: 10 min conectados, 10 min de servicio, ~1.200/h y ningún viaje activo;
+- corrección de minutos de viaje manual ajustando Conectado por la diferencia;
+- extras/bonos sin crear minutos de servicio;
+- rechazo a nivel SQLite de un viaje sin sesión existente;
+- expiración de intento invalidando la revisión/caché;
+- un `SIGUIENTE` de una sesión anterior no se promociona al terminar un viaje de la sesión actual;
+- `parseVisible` con Aceptar antes del precio;
+- oferta válida con barra Promos/Billetera;
+- preservación de zonas/direcciones en el árbol real aplanado de $392;
+- árbol Accessibility con muchos nodos invisibles y Aceptar clicable posterior;
 - regresiones previas de promociones, UI, licencias y estrategia 2.7.1.
 
 GitHub Actions ejecuta obligatoriamente `testDebugUnitTest` y después `assembleDebug`. Un APK no se publica como artefacto si las pruebas o la compilación fallan.
@@ -184,6 +222,6 @@ Antes de congelar definitivamente Core para construir Data/Atlas encima, la vali
 
 ## Estado
 
-**3.1.2 Core es la candidata auditada de código para prueba de campo.**
+**3.1.3 Core es la candidata auditada de código para prueba de campo.**
 
-No se debe iniciar 3.2 Atlas sobre una versión anterior de Core. Si las pruebas de campo anteriores no detectan una regresión, 3.1.2 puede congelarse como la base operativa para la siguiente etapa.
+No se debe iniciar 3.2 Atlas sobre una versión anterior de Core. Si las pruebas de campo anteriores no detectan una regresión, 3.1.3 puede congelarse como la base operativa para la siguiente etapa.
