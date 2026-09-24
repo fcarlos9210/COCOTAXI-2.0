@@ -1,6 +1,6 @@
 --- a/app/src/test/java/com/cocotaxi/app/StoreTest.java
 +++ b/app/src/test/java/com/cocotaxi/app/StoreTest.java
-@@ -416,8 +416,14 @@
+@@ -416,8 +416,13 @@
    public void expiringAttemptInvalidatesRevisionAndRemovesActiveAttempt() {
      String id = attempt();
      assertNotNull(id);
