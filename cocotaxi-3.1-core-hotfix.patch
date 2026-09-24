@@ -1,0 +1,21 @@
+--- a/app/src/main/java/com/cocotaxi/app/CocoStore.java
++++ b/app/src/main/java/com/cocotaxi/app/CocoStore.java
+@@ -535,7 +535,7 @@
+     Trip t = activeTrip();
+     if (t == null || !"ASIGNADO".equals(t.status) || t.acceptedBoot == boot()) return false;
+ 
+-    String text = normalized == null ? "" : normalized;
++    String text = OfferParser.normalize(normalized == null ? "" : normalized);
+     if (AssignmentSignals.isCancelledNormalized(text)) {
+       cancelObserved(t.id);
+       resumeSessionAfterRecovery(s.id);
+--- a/app/src/test/java/com/cocotaxi/app/StoreTest.java
++++ b/app/src/test/java/com/cocotaxi/app/StoreTest.java
+@@ -480,7 +480,7 @@
+     CocoStore.closeForTests();
+     st = CocoStore.get(c);
+     assertEquals(200, st.session().money, .001);
+-    assertEquals(3, st.getReadableDatabase().getVersion());
++    assertEquals(4, st.getReadableDatabase().getVersion());
+     assertTrue(st.dailyCalibration().provisional);
+   }
