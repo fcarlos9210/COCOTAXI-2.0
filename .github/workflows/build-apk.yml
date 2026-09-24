@@ -26,6 +26,7 @@ on:
       - 'cocotaxi-3.1-core-recovery2.patch.gz.b64.part*'
       - 'cocotaxi-3.1.2-process-recovery.patch'
       - 'cocotaxi-3.1.3-manual-parser-auditfix.patch.gz.b64'
+      - 'cocotaxi-3.1.3-testfix.patch'
       - 'CAMBIOS_3.1.md'
       - '.github/workflows/build-apk.yml'
 
@@ -157,6 +158,11 @@ jobs:
           base64 -d cocotaxi-3.1.3-manual-parser-auditfix.patch.gz.b64 | gzip -dc > /tmp/coco313.patch
           echo "1bf85084853b60cdd49ddf19e096f46f903ed1ce251ed55e37415c071d1819dc  /tmp/coco313.patch" | sha256sum -c -
           patch --batch -p1 -d "$PROJECT_DIR" < /tmp/coco313.patch
+
+      - name: Apply COCOTAXI 3.1.3 audit test fix
+        shell: bash
+        run: |
+          patch --batch -p1 -d "$PROJECT_DIR" < cocotaxi-3.1.3-testfix.patch
 
       - name: Finalize audited source tree
         shell: bash
