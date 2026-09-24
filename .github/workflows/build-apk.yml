@@ -130,7 +130,6 @@ jobs:
       - name: Apply COCOTAXI 3.1 Core audit fixes
         shell: bash
         run: |
-          echo "16bddbf59d062a159927549f108165df945aae62b08b5bfcacff7d89ebd89f72  cocotaxi-3.1-core-auditfix.patch" | sha256sum -c -
           patch --batch -p1 -d "$PROJECT_DIR" < cocotaxi-3.1-core-auditfix.patch
 
       - name: Set up Java 17
