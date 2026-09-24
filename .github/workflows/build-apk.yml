@@ -188,8 +188,8 @@ jobs:
         shell: bash
         run: |
           python3 - <<'PY'
-          import glob, xml.etree.ElementTree as ET
-          files = glob.glob("$PROJECT_DIR/app/build/test-results/testDebugUnitTest/TEST-*.xml")
+          import glob, os, xml.etree.ElementTree as ET
+          files = glob.glob(os.path.join(os.environ["PROJECT_DIR"], "app/build/test-results/testDebugUnitTest/TEST-*.xml"))
           tests = failures = errors = skipped = 0
           for file in files:
               root = ET.parse(file).getroot()
