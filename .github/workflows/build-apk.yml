@@ -122,9 +122,9 @@ jobs:
       - name: Apply COCOTAXI 3.4.1 field fixes
         shell: bash
         run: |
-          echo "47e06b9fed1e362cbad9ab4ba7f030bb4600008c18f4c530d857e3628d7133fb  cocotaxi-3.4.1-fixes.patch.gz.b64" | sha256sum -c -
+          echo "220139034694566e51f070090d55b3936115fd2512d41b135c10ab3e2a932de1  cocotaxi-3.4.1-fixes.patch.gz.b64" | sha256sum -c -
           base64 -d cocotaxi-3.4.1-fixes.patch.gz.b64 | gzip -dc > /tmp/coco341.patch
-          echo "93212da4d1711467c199a8eb6eb0748c55e983d8b5c323b17ee399ce3f95f371  /tmp/coco341.patch" | sha256sum -c -
+          echo "54ffbea21c4f60ad6c069463d826ae5c672c81b67422b15a01d2e2d94d414b83  /tmp/coco341.patch" | sha256sum -c -
           patch --batch -p1 -d "$PROJECT_DIR" < /tmp/coco341.patch
 
       - name: Set up Java 17
