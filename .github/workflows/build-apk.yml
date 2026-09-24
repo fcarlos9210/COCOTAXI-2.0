@@ -123,7 +123,7 @@ jobs:
       - name: Apply COCOTAXI 3.1 Core recovery hotfix
         shell: bash
         run: |
-          echo "f10b6a000dbf072f348da6cc4773258ef99b8e3353cc30f2d99a8dcaf926872c  cocotaxi-3.1-core-hotfix.patch" | sha256sum -c -
+          echo "e9fde531055758cb73cd314e544670530402f7a0f959db0551452bc893cc91f7  cocotaxi-3.1-core-hotfix.patch" | sha256sum -c -
           patch --batch -p1 -d "$PROJECT_DIR" < cocotaxi-3.1-core-hotfix.patch
 
       - name: Set up Java 17
