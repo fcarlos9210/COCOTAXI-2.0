@@ -1,0 +1,717 @@
+--- a/app/build.gradle	2026-09-25 16:20:19.950082276 -0500
++++ b/app/build.gradle	2026-09-25 16:20:12.017650834 -0500
+@@ -10,8 +10,8 @@
+         applicationId 'com.cocotaxi.app'
+         minSdk 26
+         targetSdk 36
+-        versionCode 56
+-        versionName '3.1.6'
++        versionCode 57
++        versionName '3.1.7'
+     }
+ 
+     compileOptions {
+--- a/app/src/main/java/com/cocotaxi/app/CocoDataStore.java	1969-12-31 18:00:00.000000000 -0600
++++ b/app/src/main/java/com/cocotaxi/app/CocoDataStore.java	2026-09-25 16:20:02.913464207 -0500
+@@ -0,0 +1,150 @@
++package com.cocotaxi.app;
++
++import android.content.Context;
++import android.graphics.Rect;
++import org.json.JSONObject;
++import java.io.*;
++import java.nio.charset.StandardCharsets;
++import java.time.*;
++import java.util.*;
++import java.util.concurrent.*;
++
++/** Private monthly observation log. These observations never change trip income or autoaccept. */
++public final class CocoDataStore {
++  private static final ExecutorService IO = Executors.newSingleThreadExecutor(r -> {
++    Thread t = new Thread(r, "CocoObservations");
++    t.setDaemon(true);
++    return t;
++  });
++  private static final Map<String, Long> RECENT = new HashMap<>();
++
++  private CocoDataStore() {}
++
++  public static File currentFile(Context context, long now) {
++    String month = Instant.ofEpochMilli(now).atZone(CocoStore.ZONE).toLocalDate()
++        .toString().substring(0, 7);
++    return new File(new File(context.getFilesDir(), "datos"), "observacion_" + month + ".jsonl");
++  }
++
++  private static String area(String raw) {
++    String s = OfferParser.normalize(raw == null ? "" : raw).replaceAll("[^a-z0-9 ]", " ")
++        .replaceAll("\\s+", " ").trim();
++    return s.length() > 80 ? s.substring(0, 80) : s;
++  }
++
++  private static synchronized boolean first(String key, long now, long window) {
++    long last = RECENT.getOrDefault(key, Long.MIN_VALUE);
++    if (last != Long.MIN_VALUE && now >= last && now - last < window) return false;
++    if (RECENT.size() > 500) RECENT.entrySet().removeIf(e -> now - e.getValue() > 3600000L);
++    RECENT.put(key, now);
++    return true;
++  }
++
++  public static void offer(Context context, String sessionId, Offer offer,
++      DecisionEngine.Result result, boolean ocr) {
++    if (offer == null || result == null || !offer.hasEnoughForDecision()) return;
++    long now = System.currentTimeMillis();
++    if (!first("O:" + sessionId + ":" + offer.key, now, 300000L)) return;
++    try {
++      JSONObject row = new JSONObject();
++      row.put("type", "offer"); row.put("at", now); row.put("session", sessionId);
++      row.put("pickup", area(offer.pickupArea)); row.put("destination", area(offer.destinationArea));
++      row.put("fare_cents", Money.cents(offer.fare));
++      row.put("pickup_min", offer.pickupMin); row.put("trip_min", offer.tripMin);
++      row.put("hourly", Double.isFinite(result.hourly) ? result.hourly : 0);
++      row.put("pickup_heat", offer.pickupHeat); row.put("destination_heat", offer.destinationHeat);
++      row.put("ocr", ocr);
++      enqueue(context, row, now);
++    } catch (Exception ignored) { }
++  }
++
++  /** Screen hexes are relative to the current Cabify viewport; label is the stable map anchor. */
++  public static void mapCell(Context context, String label, int heat, Rect bounds,
++      int width, int height, long now) {
++    String place = area(label);
++    if (place.isEmpty() || heat < 2 || width <= 0 || height <= 0 || bounds == null) return;
++    int col = Math.max(0, Math.min(11, bounds.centerX() * 12 / width));
++    int rowIndex = Math.max(0, Math.min(19, bounds.centerY() * 20 / height));
++    if (!first("H:" + place + ":" + heat, now, 60000L)) return;
++    try {
++      JSONObject row = new JSONObject();
++      row.put("type", "map_cell"); row.put("at", now); row.put("label", place);
++      row.put("heat", heat); row.put("screen_col", col); row.put("screen_row", rowIndex);
++      row.put("viewport_relative", true);
++      enqueue(context, row, now);
++    } catch (Exception ignored) { }
++  }
++
++  private static void enqueue(Context context, JSONObject row, long now) {
++    File file = currentFile(context.getApplicationContext(), now);
++    File root = file.getParentFile();
++    IO.execute(() -> {
++      if (!root.exists() && !root.mkdirs()) return;
++      try (FileOutputStream out = new FileOutputStream(file, true)) {
++        out.write((row.toString() + "\n").getBytes(StandardCharsets.UTF_8));
++      } catch (IOException e) {
++        android.util.Log.w("COCO_DATA", "observation", e);
++      }
++    });
++  }
++
++  public static final class Forecast {
++    public final String place;
++    public final int samples;
++    public final double medianHourly;
++    public final int heat;
++    Forecast(String place, int samples, double medianHourly, int heat) {
++      this.place = place; this.samples = samples; this.medianHourly = medianHourly; this.heat = heat;
++    }
++  }
++
++  /** Only places with at least three observations at a similar local hour are displayed. */
++  public static List<Forecast> forecasts(Context context, long now) {
++    Map<String, List<Double>> rates = new HashMap<>();
++    Map<String, Integer> heat = new HashMap<>();
++    File root = new File(context.getFilesDir(), "datos");
++    File[] files = root.listFiles((dir, name) -> name.matches("observacion_[0-9]{4}-[0-9]{2}\\.jsonl"));
++    if (files == null) return Collections.emptyList();
++    int hour = Instant.ofEpochMilli(now).atZone(CocoStore.ZONE).getHour();
++    DayOfWeek day = Instant.ofEpochMilli(now).atZone(CocoStore.ZONE).getDayOfWeek();
++    for (File file : files) {
++      // A bounded read prevents a long-running driver's log from blocking the UI indefinitely.
++      if (file.length() > 8_000_000) continue;
++      try (BufferedReader in = new BufferedReader(new InputStreamReader(
++          new FileInputStream(file), StandardCharsets.UTF_8))) {
++        for (String line; (line = in.readLine()) != null;) {
++          JSONObject o = new JSONObject(line);
++          long at = o.optLong("at");
++          if (at > now || now - at > 30L * 86400000L) continue;
++          int observedHour = Instant.ofEpochMilli(at).atZone(CocoStore.ZONE).getHour();
++          if (Instant.ofEpochMilli(at).atZone(CocoStore.ZONE).getDayOfWeek() != day) continue;
++          int diff = Math.abs(hour - observedHour);
++          if (Math.min(diff, 24 - diff) > 2) continue;
++          if ("offer".equals(o.optString("type"))) {
++            String place = o.optString("pickup");
++            double hourly = o.optDouble("hourly");
++            if (!place.isEmpty() && hourly > 0 && hourly < 10000)
++              rates.computeIfAbsent(place, k -> new ArrayList<>()).add(hourly);
++          } else if ("map_cell".equals(o.optString("type"))) {
++            String place = o.optString("label");
++            heat.put(place, Math.max(heat.getOrDefault(place, 0), o.optInt("heat")));
++          }
++        }
++      } catch (Exception e) {
++        android.util.Log.w("COCO_DATA", "read observation", e);
++      }
++    }
++    List<Forecast> result = new ArrayList<>();
++    for (Map.Entry<String, List<Double>> entry : rates.entrySet()) {
++      List<Double> values = entry.getValue();
++      if (values.size() < 3) continue;
++      Collections.sort(values);
++      result.add(new Forecast(entry.getKey(), values.size(),
++          values.get(values.size() / 2), heat.getOrDefault(entry.getKey(), -1)));
++    }
++    result.sort((a, b) -> Double.compare(b.medianHourly, a.medianHourly));
++    return result;
++  }
++
++  static void awaitWritesForTests() throws Exception { IO.submit(() -> {}).get(5, TimeUnit.SECONDS); }
++}
+--- a/app/src/main/java/com/cocotaxi/app/CocoStore.java	2026-09-25 16:20:19.950348447 -0500
++++ b/app/src/main/java/com/cocotaxi/app/CocoStore.java	2026-09-25 16:19:31.460801799 -0500
+@@ -26,7 +26,7 @@
+   }
+ 
+   private CocoStore(Context c) {
+-    super(c, "cocotaxi_v3.db", null, 8);
++    super(c, "cocotaxi_v3.db", null, 10);
+     context = c.getApplicationContext();
+   }
+ 
+@@ -55,7 +55,7 @@
+         "CREATE TABLE trips(id TEXT PRIMARY KEY,session TEXT,at INTEGER,status TEXT,offered"
+             + " REAL,kind TEXT,estimate INTEGER,actual INTEGER,cost INTEGER,ordinary REAL,pair"
+             + " INTEGER DEFAULT 0,minutes REAL,accepted INTEGER,accepted_wall INTEGER DEFAULT 0,accepted_boot INTEGER DEFAULT -1,key TEXT,label TEXT,deleted INTEGER"
+-            + " DEFAULT 0,trip INTEGER DEFAULT 1,planned REAL DEFAULT 0,connected_adjusted INTEGER DEFAULT 0,connected_delta REAL DEFAULT 0,prior_status TEXT DEFAULT '')");
++            + " DEFAULT 0,trip INTEGER DEFAULT 1,planned REAL DEFAULT 0,connected_adjusted INTEGER DEFAULT 0,connected_delta REAL DEFAULT 0,prior_status TEXT DEFAULT '',origin TEXT DEFAULT 'CABIFY',accepted_at INTEGER DEFAULT 0,completed_at INTEGER DEFAULT 0,corrected_at INTEGER DEFAULT 0)");
+     d.execSQL("CREATE INDEX trips_session ON trips(session,at)");
+     ensureTripSessionTrigger(d);
+     d.execSQL("CREATE TABLE intervals(start INTEGER,end INTEGER,minutes REAL,session TEXT)");
+@@ -108,6 +108,26 @@
+       d.execSQL("UPDATE trips SET connected_delta=minutes WHERE deleted=1"
+           + " AND connected_adjusted=1 AND connected_delta=0");
+     }
++    if (old < 9) {
++      if (!hasColumn(d, "trips", "origin"))
++        d.execSQL("ALTER TABLE trips ADD COLUMN origin TEXT DEFAULT 'CABIFY'");
++      // Old manually entered rows have no offer and no acceptance anchor. A zero-fare observed
++      // Cabify trip can share those values after completion; the label disambiguates it.
++      d.execSQL("UPDATE trips SET origin='MANUAL' WHERE offered<=0 AND accepted<=0"
++          + " AND status='FINALIZADO' AND COALESCE(label,'') NOT IN"
++          + " ('Aceptación automática','Aceptación manual detectada')"
++          + " AND COALESCE(label,'') NOT LIKE 'Viaje aceptado en Cabify%'");
++    }
++    if (old < 10) {
++      if (!hasColumn(d, "trips", "accepted_at"))
++        d.execSQL("ALTER TABLE trips ADD COLUMN accepted_at INTEGER DEFAULT 0");
++      if (!hasColumn(d, "trips", "completed_at"))
++        d.execSQL("ALTER TABLE trips ADD COLUMN completed_at INTEGER DEFAULT 0");
++      if (!hasColumn(d, "trips", "corrected_at"))
++        d.execSQL("ALTER TABLE trips ADD COLUMN corrected_at INTEGER DEFAULT 0");
++      // Historical `at` may already be the completion/correction instant. Do not invent an
++      // original acceptance timestamp when the old schema did not preserve it.
++    }
+   }
+ 
+   private static void ensureTripSessionTrigger(SQLiteDatabase d) {
+@@ -393,6 +413,16 @@
+   public synchronized String attempt(Offer o, DecisionEngine.Result result, boolean automatic) {
+     Session s = session();
+     if (!s.active || s.paused) return null;
++    // ACTION_CLICK, an accessibility click event and the polling loop can all see the same card.
++    // The second observation must not become an accepted consecutive ride.
++    if (o == null || o.key == null || o.key.isEmpty()) return null;
++    try (Cursor duplicate = getReadableDatabase().rawQuery(
++        "SELECT 1 FROM trips WHERE session=? AND deleted=0 AND key=?"
++            + " AND status IN ('INTENTO','ASIGNADO','INTENTO_SIGUIENTE','SIGUIENTE')"
++            + " AND at>? LIMIT 1",
++        new String[] {s.id, o.key, Long.toString(System.currentTimeMillis() - 60000L)})) {
++      if (duplicate.moveToFirst()) return null;
++    }
+     Trip current = activeTrip();
+     boolean next = current != null;
+     if (next && (!"ASIGNADO".equals(current.status) || nextTrip() != null)) return null;
+@@ -410,6 +440,7 @@
+     v.put("planned", Math.max(0, result.minutes));
+     v.put("accepted", 0);
+     v.put("key", o.key);
++    v.put("origin", "CABIFY");
+     v.put("label", automatic ? "Aceptación automática" : "Selección manual detectada");
+     getWritableDatabase().insertOrThrow("trips", null, v);
+     touch();
+@@ -430,6 +461,7 @@
+     v.put("status", queued ? "SIGUIENTE" : "ASIGNADO");
+     v.put("accepted", queued ? 0 : SystemClock.elapsedRealtime());
+     v.put("accepted_wall", queued ? 0 : System.currentTimeMillis());
++    v.put("accepted_at", System.currentTimeMillis());
+     v.put("accepted_boot", boot());
+     boolean changed =
+         getWritableDatabase()
+@@ -470,8 +502,10 @@
+     v.put("planned", result == null ? 0 : Math.max(0, result.minutes));
+     v.put("accepted", SystemClock.elapsedRealtime());
+     v.put("accepted_wall", System.currentTimeMillis());
++    v.put("accepted_at", System.currentTimeMillis());
+     v.put("accepted_boot", boot());
+     v.put("key", offer == null ? "" : offer.key);
++    v.put("origin", "CABIFY");
+     v.put(
+         "label",
+         offer == null
+@@ -727,7 +761,7 @@
+     if (t == null || !t.status.equals("ASIGNADO")) return false;
+     ContentValues v = new ContentValues();
+     v.put("status", "FINALIZADO");
+-    v.put("at", System.currentTimeMillis());
++    v.put("completed_at", System.currentTimeMillis());
+     double elapsed = activeSegmentMinutes(t);
+     v.put("minutes", Math.max(0, t.minutes) + elapsed);
+     v.put("accepted", 0);
+@@ -823,6 +857,8 @@
+       v.put("session", sessionId);
+       v.put("at", manualTimestamp(sessionId));
+       v.put("status", "FINALIZADO");
++      v.put("origin", "MANUAL");
++      v.put("completed_at", System.currentTimeMillis());
+       v.put("offered", 0);
+       v.put("kind", "UNKNOWN");
+       v.put("estimate", 0);
+@@ -891,7 +927,7 @@
+       throw new IllegalArgumentException("Importes no válidos");
+     Trip t = find(id);
+     if (t == null) return;
+-    boolean manualEntry = t.offered <= 0 && t.accepted <= 0;
++    boolean manualEntry = t.manual;
+     if (manualEntry && Double.isFinite(manualMinutes) && manualMinutes < 0)
+       throw new IllegalArgumentException("Minutos no válidos");
+     if (!manualEntry && !"ASIGNADO".equals(t.status) && !"FINALIZADO".equals(t.status)
+@@ -928,9 +964,10 @@
+         v.put("accepted", 0);
+         v.put("accepted_wall", 0);
+         v.put("accepted_boot", boot());
+-        v.put("at", System.currentTimeMillis());
++        v.put("completed_at", System.currentTimeMillis());
+       }
+       v.put("status", "FINALIZADO");
++      v.put("corrected_at", System.currentTimeMillis());
+       db.update("trips", v, "id=?", new String[] {id});
+       if ("ASIGNADO".equals(t.status)) promoteNext(db, t.session);
+       db.setTransactionSuccessful();
+@@ -943,7 +980,7 @@
+   public synchronized void delete(String id) {
+     Trip t = find(id);
+     if (t == null || t.deleted) return;
+-    boolean manualEntry = t.offered <= 0 && t.accepted <= 0;
++    boolean manualEntry = t.manual;
+     Session current = session();
+     if (manualEntry && current.active && t.session.equals(current.id)) checkpointRemainder(current);
+     SQLiteDatabase db = getWritableDatabase();
+@@ -963,7 +1000,7 @@
+   public synchronized void restore(String id) {
+     Trip t = find(id);
+     if (t == null || !t.deleted) return;
+-    boolean manualEntry = t.offered <= 0 && t.accepted <= 0;
++    boolean manualEntry = t.manual;
+     Session current = session();
+     if (manualEntry && current.active && t.session.equals(current.id)) checkpointRemainder(current);
+     SQLiteDatabase db = getWritableDatabase();
+@@ -1033,7 +1070,7 @@
+         getReadableDatabase()
+             .rawQuery(
+                 "SELECT"
+-                    + " id,session,at,status,offered,kind,estimate,actual,cost,ordinary,pair,minutes,accepted,accepted_wall,accepted_boot,key,label,deleted,planned,connected_adjusted,trip,connected_delta,prior_status"
++                    + " id,session,at,status,offered,kind,estimate,actual,cost,ordinary,pair,minutes,accepted,accepted_wall,accepted_boot,key,label,deleted,planned,connected_adjusted,trip,connected_delta,prior_status,origin"
+                     + " FROM trips WHERE "
+                     + where
+                     + " ORDER BY at DESC",
+@@ -1064,6 +1101,7 @@
+         t.trip = q.getInt(20) == 1;
+         t.connectedDelta = q.getDouble(21);
+         t.priorStatus = q.getString(22);
++        t.manual = "MANUAL".equals(q.getString(23));
+         out.add(t);
+       }
+     }
+@@ -1239,7 +1277,7 @@
+     public String id, session, status, priorStatus, kind, key, label;
+     public long at, accepted, acceptedWall;
+     public int acceptedBoot;
+-    public boolean confirmed, pair, deleted, connectedAdjusted, trip;
++    public boolean confirmed, pair, deleted, connectedAdjusted, trip, manual;
+     public double connectedDelta;
+     public double offered, estimate, actual, cost, ordinary, minutes, planned;
+ 
+--- a/app/src/main/java/com/cocotaxi/app/CocotaxiAccessibilityService.java	2026-09-25 16:20:19.950522179 -0500
++++ b/app/src/main/java/com/cocotaxi/app/CocotaxiAccessibilityService.java	2026-09-25 16:17:26.110062887 -0500
+@@ -78,7 +78,7 @@
+     if (assigned && trip == null) {
+       long now = SystemClock.elapsedRealtime();
+       Offer candidate = null;
+-      if (recentDetail != null && session.id.equals(detailSession) && now - detailAt <= 60000)
++      if (recentDetail != null && session.id.equals(detailSession) && now - detailAt <= 15000)
+         candidate = recentDetail;
+       else if (recentOcrOffer != null && session.id.equals(lastOfferSession) && now - recentOcrAt <= 15000)
+         candidate = recentOcrOffer;
+@@ -87,6 +87,10 @@
+           && now - lastUnambiguousAt <= 15000)
+         candidate = lastUnambiguousOffer;
+       else if (previous.size() == 1 && now - previousAt <= 15000) candidate = previous.get(0);
++      if (candidate != null && recentOcrOffer != null
++          && session.id.equals(lastOfferSession) && now - recentOcrAt <= 15000
++          && OfferParser.sameOffer(candidate, recentOcrOffer))
++        candidate = OfferParser.merge(candidate, recentOcrOffer);
+ 
+       if (trip == null) {
+         // Give an already-running OCR frame a short chance to publish the fare before creating a
+@@ -263,6 +267,10 @@
+           && session.id.equals(lastOfferSession)
+           && now - lastUnambiguousAt <= 15000) candidate = lastUnambiguousOffer;
+       else if (previous.size() == 1 && now - previousAt <= 15000) candidate = previous.get(0);
++      if (candidate != null && recentOcrOffer != null
++          && session.id.equals(lastOfferSession) && now - recentOcrAt <= 15000
++          && OfferParser.sameOffer(candidate, recentOcrOffer))
++        candidate = OfferParser.merge(candidate, recentOcrOffer);
+       if (candidate != null && candidate.hasEnoughForDecision()) {
+         annotateOffer(candidate);
+         SettingsStore.Values v = SettingsStore.load(this);
+@@ -653,6 +661,13 @@
+     DecisionEngine.Result result = best(cards, v, session, demand, promo);
+     long decisionEndNs = SystemClock.elapsedRealtimeNanos();
+     if (result == null) return;
++    for (Offer offer : cards) {
++      if (offer != null && offer.hasEnoughForDecision()) {
++        DecisionEngine.Result observation = offer == result.offer ? result
++            : DecisionEngine.evaluate(offer, v, session, demand, calibration(store, offer.kind, v), promo);
++        CocoDataStore.offer(this, session.id, offer, observation, fromOcr);
++      }
++    }
+ 
+     // Critical ordering: decide -> click Cabify -> persist -> draw overlay. Window rendering must never
+     // delay the Accept action.
+@@ -868,7 +883,8 @@
+ 
+                 // Visual demand and zone labels are learned only from Cabify's own map. This path
+                 // never asks Android for device location.
+-                int visual = zoneVision.observe(workBitmap, frame, normalized, System.currentTimeMillis());
++                int visual = zoneVision.observe(CocotaxiAccessibilityService.this, workBitmap,
++                    frame, normalized, System.currentTimeMillis());
+                 int textual = DemandModel.textSignalNormalized(normalized);
+                 int signal = Math.max(visual, textual);
+                 if (signal >= 0) {
+@@ -915,6 +931,10 @@
+                   PromotionStore.Snapshot promo = promotionSnapshot(store, s);
+                   DecisionEngine.Result result = best(cards, settings, s, demand, promo);
+                   if (result != null) {
++                    for (Offer observed : cards)
++                      CocoDataStore.offer(CocotaxiAccessibilityService.this, s.id, observed,
++                          observed == result.offer ? result : DecisionEngine.evaluate(observed,
++                              settings, s, demand, calibration(store, observed.kind, settings), promo), true);
+                     CocotaxiOverlayService.update(
+                         result, cards.indexOf(result.offer) + 1, cards.size(), demand, true);
+                   }
+--- a/app/src/main/java/com/cocotaxi/app/DecisionEngine.java	2026-09-25 07:50:22.000000000 -0500
++++ b/app/src/main/java/com/cocotaxi/app/DecisionEngine.java	2026-09-25 16:18:57.476080975 -0500
+@@ -53,7 +53,8 @@
+       return r;
+     }
+ 
+-    r.payout = Money.round(o.fare * r.factor);
++    // Cabify's separately visible toll is a rider payment, not a commission-adjusted fare.
++    r.payout = Money.round(o.fare * r.factor + Math.max(0, o.tolls));
+     r.cost = Money.round(v.costKm * (o.totalKm() + v.emptyKm));
+     r.net = r.payout - r.cost;
+     // Actual service duration from Cabify. Never contaminate this with a return-zone penalty because
+@@ -83,11 +84,11 @@
+     double recovery =
+         v.recovery && s.minutes >= 60 ? Math.min(goal * .20, Math.max(0, needed - goal)) : 0;
+     r.threshold = operative * multiplier + (demand >= 2 ? recovery : 0);
+-    r.required = (r.threshold * r.economicMinutes / 60 + r.cost) / r.factor;
++    r.required = Math.max(0, (r.threshold * r.economicMinutes / 60 + r.cost - o.tolls) / r.factor);
+     r.recoverAll =
+         Math.max(
+             0,
+-            (goal * (s.minutes + r.economicMinutes) / 60 - s.money + r.cost) / r.factor);
++            (goal * (s.minutes + r.economicMinutes) / 60 - s.money + r.cost - o.tolls) / r.factor);
+ 
+     if (v.maxPickupMin > 0 && o.pickupMin > v.maxPickupMin
+         || v.maxPickupKm > 0 && o.pickupKm > v.maxPickupKm) {
+--- a/app/src/main/java/com/cocotaxi/app/MainActivity.java	2026-09-25 07:53:40.000000000 -0500
++++ b/app/src/main/java/com/cocotaxi/app/MainActivity.java	2026-09-25 16:20:03.809482971 -0500
+@@ -628,11 +628,13 @@
+     else if (tab == 0) home();
+     else if (tab == 1) history();
+     else if (tab == 2) goals();
+-    else settings();
++    else if (tab == 3) settings();
++    else advisor();
+     LinearLayout nav = row();
+-    String[] labels = {"Inicio", "Sesión", "Metas", "Ajustes"};
+-    int[] icons = {LineIconView.HOME, LineIconView.CLOCK, LineIconView.TARGET, LineIconView.GEAR};
+-    for (int n = 0; n < 4; n++) {
++    String[] labels = {"Inicio", "Sesión", "Metas", "Ajustes", "DÓNDE IR"};
++    int[] icons = {LineIconView.HOME, LineIconView.CLOCK, LineIconView.TARGET, LineIconView.GEAR,
++        LineIconView.ROAD};
++    for (int n = 0; n < labels.length; n++) {
+       final int target = n;
+       LinearLayout item = col();
+       item.setGravity(Gravity.CENTER);
+@@ -909,23 +911,55 @@
+         t.deleted ? MUTED : ("SIN CONFIRMAR".equals(t.status) ? RED : GREEN));
+     tripCard.addView(
+         text(
+-            (t.confirmed ? "Pago real" : "Pago estimado")
+-                + " · oferta "
+-                + Money.exact(t.offered)
+-                + (t.minutes > 0 ? " · servicio " + duration(t.minutes) : "")
+-                + "\n"
+-                + t.label,
++            t.manual
++                ? (t.trip ? "Importe " + Money.exact(t.net()) + " · Tiempo " + duration(t.minutes)
++                    : "Importe " + Money.exact(t.net()))
++                : (t.confirmed ? "Pago real" : "Pago estimado")
++                    + " · oferta " + Money.exact(t.offered)
++                    + (t.minutes > 0 ? " · servicio " + duration(t.minutes) : "")
++                    + "\n" + t.label,
+             compactUi ? 10.5f : 12,
+             MUTED));
+     tripCard.addView(button("Gestionar viaje  ›", () -> tripActions(t)));
+   }
+ 
++  private void advisor() {
++    LinearLayout intro = card(body, "DÓNDE IR", LineIconView.ROAD);
++    intro.addView(text("Señales observadas de Cabify en Montevideo. Sin GPS ni posición actual.",
++        compactUi ? 11 : 13, WHITE));
++    intro.addView(text("El $/h es la mediana de ofertas vistas en este día y horario; todavía no incluye "
++        + "espera hasta el próximo viaje ni traslado hacia la zona.", compactUi ? 10 : 12, MUTED));
++    List<CocoDataStore.Forecast> forecasts = CocoDataStore.forecasts(this,
++        System.currentTimeMillis());
++    if (forecasts.isEmpty()) {
++      intro.addView(text("Todavía faltan datos: se necesitan 3 ofertas por zona en este día y horario.",
++          compactUi ? 11 : 13, YELLOW));
++    } else {
++      for (int i = 0; i < Math.min(3, forecasts.size()); i++) {
++        CocoDataStore.Forecast f = forecasts.get(i);
++        LinearLayout zone = card(body, f.place.toUpperCase(Locale.ROOT), LineIconView.CHART);
++        line(zone, "Oferta observada por hora", Money.exact(f.medianHourly) + "/h", GREEN);
++        zone.addView(text(f.samples + " ofertas · "
++            + (f.heat == 3 ? "mapa rojo observado" : f.heat == 2 ? "mapa amarillo observado"
++                : "sin señal reciente del mapa"), compactUi ? 10 : 12, MUTED));
++      }
++    }
++    intro.addView(button("Exportar observaciones del mes", () -> {
++      java.io.File file = CocoDataStore.currentFile(this, System.currentTimeMillis());
++      if (!file.isFile()) { toast("Aún no hay observaciones este mes"); return; }
++      Intent save = new Intent(Intent.ACTION_CREATE_DOCUMENT)
++          .addCategory(Intent.CATEGORY_OPENABLE).setType("application/x-ndjson")
++          .putExtra(Intent.EXTRA_TITLE, file.getName());
++      startActivityForResult(save, 94);
++    }));
++  }
++
+   private void tripActions(CocoStore.Trip t) {
+     CocoStore store = CocoStore.get(this);
+     List<String> actions = new ArrayList<>();
+     List<Runnable> run = new ArrayList<>();
+     if (!t.deleted) {
+-      boolean manualEntry = t.offered <= 0 && t.accepted <= 0;
++      boolean manualEntry = t.manual;
+       if (!manualEntry && ("ASIGNADO".equals(t.status) || "FINALIZADO".equals(t.status))) {
+         actions.add("Quitar confirmación del viaje");
+         run.add(() -> { store.unconfirm(t.id); render(); });
+@@ -1083,7 +1117,7 @@
+ 
+   private void correct(CocoStore.Trip t) {
+     LinearLayout c = form();
+-    boolean manualEntry = t.offered <= 0 && t.accepted <= 0;
++    boolean manualEntry = t.manual;
+     EditText
+         amount =
+             field(
+@@ -1959,6 +1993,17 @@
+   protected void onActivityResult(int request, int result, Intent data) {
+     super.onActivityResult(request, result, data);
+     if (result != RESULT_OK || data == null) return;
++    if (request == 94 && data.getData() != null) {
++      java.io.File file = CocoDataStore.currentFile(this, System.currentTimeMillis());
++      try (java.io.InputStream in = new java.io.FileInputStream(file);
++           java.io.OutputStream out = getContentResolver().openOutputStream(data.getData())) {
++        if (out == null) throw new java.io.IOException("Destino no disponible");
++        byte[] buffer = new byte[8192];
++        for (int n; (n = in.read(buffer)) != -1;) out.write(buffer, 0, n);
++        toast("Observaciones exportadas");
++      } catch (Exception e) { toast("No se pudieron exportar los datos"); }
++      return;
++    }
+     if (request == 92) {
+       startForegroundService(
+           new Intent(this, CaptureService.class).putExtra("code", result).putExtra("data", data));
+--- a/app/src/main/java/com/cocotaxi/app/MapDemandVision.java	2026-09-25 07:50:22.000000000 -0500
++++ b/app/src/main/java/com/cocotaxi/app/MapDemandVision.java	2026-09-25 16:17:25.274044547 -0500
+@@ -1,6 +1,7 @@
+ package com.cocotaxi.app;
+ 
+ import android.graphics.Bitmap;
++import android.content.Context;
+ import android.graphics.Color;
+ import android.graphics.Rect;
+ import java.util.*;
+@@ -19,6 +20,11 @@
+ 
+   public synchronized int observe(
+       Bitmap bitmap, ScreenOcrEngine.Frame frame, String normalized, long now) {
++    return observe(null, bitmap, frame, normalized, now);
++  }
++
++  public synchronized int observe(
++      Context context, Bitmap bitmap, ScreenOcrEngine.Frame frame, String normalized, long now) {
+     if (bitmap == null || frame == null || !DemandModel.isMapScreenNormalized(normalized)) return -1;
+     int overall = overallHeat(bitmap);
+     if (overall >= 2) {
+@@ -33,6 +39,8 @@
+       String key = canonical(label);
+       if (key.isEmpty()) continue;
+       labels.put(key, new HotLabel(key, heat, now));
++      if (context != null) CocoDataStore.mapCell(context, key, heat, line.bounds,
++          bitmap.getWidth(), bitmap.getHeight(), now);
+     }
+     prune(now);
+     return Math.max(overall, DemandModel.textSignalNormalized(normalized));
+--- a/app/src/test/java/com/cocotaxi/app/FormulaTest.java	2026-09-25 16:20:19.951517539 -0500
++++ b/app/src/test/java/com/cocotaxi/app/FormulaTest.java	2026-09-25 16:18:58.236097075 -0500
+@@ -66,10 +66,11 @@
+   }
+ 
+   @Test
+-  public void tollsNotProfit() {
++  public void separateVisibleTollCountsInHourlyValue() {
+     Offer o = offer(188, 3, 9);
+     o.tolls = 167;
+-    assertEquals(188, DecisionEngine.evaluate(o, values(), session(), 2, null).net, .001);
++    assertEquals(355, DecisionEngine.evaluate(o, values(), session(), 2, null).net, .001);
++    assertEquals(1775, DecisionEngine.evaluate(o, values(), session(), 2, null).hourly, .001);
+   }
+ 
+   @Test
+--- a/app/src/test/java/com/cocotaxi/app/StoreTest.java	2026-09-25 16:20:19.951728317 -0500
++++ b/app/src/test/java/com/cocotaxi/app/StoreTest.java	2026-09-25 16:19:47.925149333 -0500
+@@ -153,6 +153,43 @@
+   }
+ 
+   @Test
++  public void duplicateAcceptEventDoesNotCreateAConsecutiveTrip() {
++    String first = attempt();
++    assertTrue(st.confirmAccepted(first));
++    // Cabify can deliver ACTION_CLICK and an accessibility click event for one card.
++    assertNull(attempt());
++    assertNull(st.nextTrip());
++    assertEquals(1, st.session().trips);
++    Offer second = OfferParser.parse("$240 en app\n3 min\n9 min\nAceptar", "com.cabify.driver");
++    DecisionEngine.Result r = new DecisionEngine.Result();
++    r.payout = 240;
++    r.minutes = 12;
++    String queued = st.attempt(second, r, false);
++    assertNotNull(queued);
++    assertTrue(st.confirmAccepted(queued));
++    assertEquals("SIGUIENTE", st.find(queued).status);
++  }
++
++  @Test
++  public void completionAndCorrectionPreserveOriginalOfferDate() {
++    String id = attempt();
++    st.confirmAccepted(id);
++    long offeredAt = st.find(id).at;
++    ShadowSystemClock.advanceBy(Duration.ofMinutes(4));
++    assertTrue(st.complete(id));
++    st.correct(id, 200, 0, false, 0);
++    assertEquals(offeredAt, st.find(id).at);
++    try (android.database.Cursor q = st.getReadableDatabase().rawQuery(
++        "SELECT accepted_at,completed_at,corrected_at FROM trips WHERE id=?",
++        new String[] {id})) {
++      assertTrue(q.moveToFirst());
++      assertTrue(q.getLong(0) > 0);
++      assertTrue(q.getLong(1) >= q.getLong(0));
++      assertTrue(q.getLong(2) >= q.getLong(1));
++    }
++  }
++
++  @Test
+   public void onlyOneConsecutiveRideCanBeQueued() {
+     String current = attempt();
+     assertTrue(st.confirmAccepted(current));
+@@ -467,12 +504,46 @@
+     String id = st.observedAssignment(null, null, false);
+     assertNotNull(id);
+     assertEquals("ASIGNADO", st.find(id).status);
++    assertFalse(st.find(id).manual);
+     assertEquals(0, st.session().money, .001);
+     ShadowSystemClock.advanceBy(Duration.ofSeconds(90));
+     assertEquals(1.5, st.session().service, .01);
+   }
+ 
+   @Test
++  public void manualOriginSurvivesCorrectionAndDoesNotChangeObservedZeroFare() {
++    String manual = st.manual(398.97, 10, "Viaje manual");
++    assertTrue(st.find(manual).manual);
++    st.correct(manual, 400, 12, false, 0);
++    assertTrue(st.find(manual).manual);
++    String observed = st.observedAssignment(null, null, false);
++    assertFalse(st.find(observed).manual);
++  }
++
++  @Test
++  public void monthlyObservationsFeedAdvisorOnlyAfterThreeSamples() throws Exception {
++    String place = "Zona " + java.util.UUID.randomUUID().toString().substring(0, 8);
++    DecisionEngine.Result result = new DecisionEngine.Result();
++    result.hourly = 840;
++    for (int i = 0; i < 3; i++) {
++      Offer o = new Offer();
++      o.hasOfferSignal = true;
++      o.fare = 210 + i;
++      o.pickupMin = 3;
++      o.tripMin = 12;
++      o.pickupArea = place;
++      o.destinationArea = "Centro";
++      o.key = "sample-" + i + "-" + place;
++      CocoDataStore.offer(c, st.session().id, o, result, true);
++    }
++    CocoDataStore.awaitWritesForTests();
++    assertTrue(CocoDataStore.currentFile(c, System.currentTimeMillis()).isFile());
++    assertTrue(CocoDataStore.forecasts(c, System.currentTimeMillis()).stream()
++        .anyMatch(f -> f.place.equals(OfferParser.normalize(place))
++            && f.samples >= 3 && Math.abs(f.medianHourly - 840) < .01));
++  }
++
++  @Test
+   public void extraDoesNotInventTrip() {
+     st.manual(1300, 0, "Bono cobrado", false);
+     assertEquals(1300, st.session().money, .001);
+@@ -754,7 +825,7 @@
+     CocoStore.closeForTests();
+     st = CocoStore.get(c);
+     assertEquals(200, st.session().money, .001);
+-    assertEquals(8, st.getReadableDatabase().getVersion());
++    assertEquals(10, st.getReadableDatabase().getVersion());
+     assertTrue(st.dailyCalibration().provisional);
+   }
+ 
+--- a/app/src/test/java/com/cocotaxi/app/UiTest.java	2026-09-25 07:50:22.000000000 -0500
++++ b/app/src/test/java/com/cocotaxi/app/UiTest.java	2026-09-25 16:18:30.923518552 -0500
+@@ -158,6 +158,21 @@
+       assertNull(find(a.getWindow().getDecorView(), "Permisos"));
+       assertNull(find(a.getWindow().getDecorView(), "Creado por Frank Carlos"));
+       snapshot(a, "ajustes");
++      click(a, "DÓNDE IR");
++      assertNotNull(find(a.getWindow().getDecorView(), "Exportar observaciones del mes"));
++    }
++  }
++
++  @Test
++  public void manualTripShowsImporteAndTiempoInSession() {
++    CocoStore store = CocoStore.get(RuntimeEnvironment.getApplication());
++    store.start();
++    store.manual(398.97, 10, "Viaje manual");
++    try (ActivityController<MainActivity> ac =
++        Robolectric.buildActivity(MainActivity.class).setup()) {
++      MainActivity a = ac.get();
++      click(a, "Sesión");
++      assertNotNull(find(a.getWindow().getDecorView(), "Importe $398,97 · Tiempo 10:00"));
+     }
+   }
+ 
