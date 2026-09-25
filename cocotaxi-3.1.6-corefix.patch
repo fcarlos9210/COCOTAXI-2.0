@@ -309,7 +309,7 @@
    public double pickupMin = -1.0;
    public double tripKm = -1.0;
 --- a/app/src/main/java/com/cocotaxi/app/OfferParser.java	2026-09-25 07:53:06.000000000 -0500
-+++ b/app/src/main/java/com/cocotaxi/app/OfferParser.java	2026-09-25 15:35:16.092675213 -0500
++++ b/app/src/main/java/com/cocotaxi/app/OfferParser.java	2026-09-25 15:39:21.053814695 -0500
 @@ -74,7 +74,10 @@
      o.kind = s.contains("para ti") ? "PARA_TI" : s.contains("en app") ? "EN_APP" : "UNKNOWN";
  
@@ -375,11 +375,15 @@
      if (!out.hasPickup() && secondary.hasPickup()) out.pickupMin = secondary.pickupMin;
      if (!out.hasTrip() && secondary.hasTrip()) out.tripMin = secondary.tripMin;
      if (out.pickupKm < 0 && secondary.pickupKm >= 0) out.pickupKm = secondary.pickupKm;
-@@ -227,6 +242,12 @@
+@@ -227,6 +242,16 @@
      return true;
    }
  
 +  public static boolean sameOffer(Offer a, Offer b) {
++    if (a != null && b != null && a.hasFare() && b.hasFare()
++        && Math.abs(a.fare - b.fare) > .011
++        && !(Math.abs(a.fare - Math.rint(a.fare)) < .001
++            && Math.floor(b.fare) == a.fare && b.fareFractionVisible)) return false;
 +    return a != null && b != null && a.hasOfferSignal && b.hasOfferSignal
 +        && ((a.hasFare() && b.hasFare()) || (a.hasPickup() && b.hasPickup())
 +            || (a.hasTrip() && b.hasTrip())) && compatible(a, b);
@@ -388,7 +392,7 @@
    private static Offer copy(Offer a) {
      if (a == null) return null;
      Offer o = new Offer();
-@@ -243,6 +264,7 @@
+@@ -243,6 +268,7 @@
      o.destinationHeat = a.destinationHeat;
      o.zoneEvidence = a.zoneEvidence;
      o.fare = a.fare;
@@ -428,16 +432,8 @@
 +  }
  }
 --- a/app/src/test/java/com/cocotaxi/app/FormulaTest.java	2026-09-25 07:54:32.000000000 -0500
-+++ b/app/src/test/java/com/cocotaxi/app/FormulaTest.java	2026-09-25 15:36:35.882362767 -0500
-@@ -2,6 +2,7 @@
- 
- import static org.junit.Assert.*;
- 
-+import android.graphics.Rect;
- import org.junit.Test;
- 
- public class FormulaTest {
-@@ -173,6 +174,36 @@
++++ b/app/src/test/java/com/cocotaxi/app/FormulaTest.java	2026-09-25 15:40:24.115131293 -0500
+@@ -173,6 +173,26 @@
      Offer ocr = OfferParser.parse("$398,97 para ti" + legs, "com.cabify.driver");
      assertEquals(398.97, OfferParser.merge(integer, ocr).fare, .001);
      assertEquals("$398,97", Money.format(OfferParser.merge(integer, ocr).fare));
@@ -455,16 +451,6 @@
 +  }
 +
 +  @Test
-+  public void ocrLineOrderingIsTransitiveForStaggeredRows() {
-+    Rect a = new Rect(90, 0, 110, 20);
-+    Rect b = new Rect(10, 8, 30, 28);
-+    Rect c = new Rect(50, 16, 70, 36);
-+    assertTrue(ScreenOcrEngine.compareBounds(a, b) < 0);
-+    assertTrue(ScreenOcrEngine.compareBounds(b, c) < 0);
-+    assertTrue(ScreenOcrEngine.compareBounds(a, c) < 0);
-+  }
-+
-+  @Test
 +  public void walletAndRealFareOnSeparateLinesSelectFare() {
 +    Offer o = OfferParser.parse(
 +        "Saldo disponible para retirar ahora: $500\n$398,97 para ti\n3 min\n9 min\nAceptar viaje",
@@ -475,16 +461,17 @@
  
    @Test
 --- a/app/src/test/java/com/cocotaxi/app/StoreTest.java	2026-09-25 08:00:44.000000000 -0500
-+++ b/app/src/test/java/com/cocotaxi/app/StoreTest.java	2026-09-25 15:35:42.173223201 -0500
-@@ -3,6 +3,7 @@
++++ b/app/src/test/java/com/cocotaxi/app/StoreTest.java	2026-09-25 15:40:24.843146493 -0500
+@@ -3,6 +3,8 @@
  import static org.junit.Assert.*;
  
  import android.content.Context;
 +import android.database.sqlite.SQLiteDatabase;
++import android.graphics.Rect;
  import java.time.Duration;
  import org.junit.*;
  import org.junit.runner.RunWith;
-@@ -174,6 +175,51 @@
+@@ -174,6 +176,61 @@
    }
  
    @Test
@@ -533,6 +520,25 @@
 +  }
 +
 +  @Test
++  public void ocrLineOrderingIsTransitiveForStaggeredRows() {
++    Rect a = new Rect(90, 0, 110, 20);
++    Rect b = new Rect(10, 8, 30, 28);
++    Rect c = new Rect(50, 16, 70, 36);
++    assertTrue(ScreenOcrEngine.compareBounds(a, b) < 0);
++    assertTrue(ScreenOcrEngine.compareBounds(b, c) < 0);
++    assertTrue(ScreenOcrEngine.compareBounds(a, c) < 0);
++  }
++
++  @Test
    public void otherDriverWins() {
      String id = attempt();
      st.observe("Otro conductor aceptó el viaje");
+@@ -697,7 +754,7 @@
+     CocoStore.closeForTests();
+     st = CocoStore.get(c);
+     assertEquals(200, st.session().money, .001);
+-    assertEquals(7, st.getReadableDatabase().getVersion());
++    assertEquals(8, st.getReadableDatabase().getVersion());
+     assertTrue(st.dailyCalibration().provisional);
+   }
+ 
