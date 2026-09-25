@@ -590,8 +590,32 @@
  
    @Test
 --- a/app/src/test/java/com/cocotaxi/app/StoreTest.java	2026-09-25 16:20:19.951728317 -0500
-+++ b/app/src/test/java/com/cocotaxi/app/StoreTest.java	2026-09-25 16:19:47.925149333 -0500
-@@ -153,6 +153,43 @@
++++ b/app/src/test/java/com/cocotaxi/app/StoreTest.java	2026-09-25 16:24:11.230836439 -0500
+@@ -96,6 +96,14 @@
+     return st.attempt(o, r, true);
+   }
+ 
++  private String nextAttempt() {
++    Offer o = OfferParser.parse("$240 en app\n3 min\n9 min\nAceptar", "com.cabify.driver");
++    DecisionEngine.Result r = new DecisionEngine.Result();
++    r.payout = 240;
++    r.minutes = 12;
++    return st.attempt(o, r, false);
++  }
++
+   @Test
+   public void photographedOriginConfirmsAssignmentOnlyOnce() {
+     String id = attempt();
+@@ -136,7 +144,7 @@
+     assertTrue(st.confirmAccepted(current));
+     ShadowSystemClock.advanceBy(Duration.ofMinutes(5));
+ 
+-    String next = attempt();
++    String next = nextAttempt();
+     assertNotNull(next);
+     assertEquals("INTENTO_SIGUIENTE", st.find(next).status);
+     assertTrue(st.confirmAccepted(next));
+@@ -153,10 +161,43 @@
    }
  
    @Test
@@ -602,11 +626,7 @@
 +    assertNull(attempt());
 +    assertNull(st.nextTrip());
 +    assertEquals(1, st.session().trips);
-+    Offer second = OfferParser.parse("$240 en app\n3 min\n9 min\nAceptar", "com.cabify.driver");
-+    DecisionEngine.Result r = new DecisionEngine.Result();
-+    r.payout = 240;
-+    r.minutes = 12;
-+    String queued = st.attempt(second, r, false);
++    String queued = nextAttempt();
 +    assertNotNull(queued);
 +    assertTrue(st.confirmAccepted(queued));
 +    assertEquals("SIGUIENTE", st.find(queued).status);
@@ -635,7 +655,30 @@
    public void onlyOneConsecutiveRideCanBeQueued() {
      String current = attempt();
      assertTrue(st.confirmAccepted(current));
-@@ -467,12 +504,46 @@
+-    String next = attempt();
++    String next = nextAttempt();
+     assertNotNull(next);
+     assertTrue(st.confirmAccepted(next));
+     assertNull(attempt());
+@@ -194,7 +235,7 @@
+   public void zeroMinuteFinalizedNeverReactivatesAndPromotesQueuedRide() {
+     String current = attempt();
+     st.confirmAccepted(current);
+-    String next = attempt();
++    String next = nextAttempt();
+     st.confirmAccepted(next);
+     st.complete(current);
+     // A finalized zero-minute ride stays finalized even after a reversible confirmation edit.
+@@ -405,7 +446,7 @@
+   public void correctingAssignedRideClosesSegmentAndPromotesNext() {
+     String first = attempt();
+     assertTrue(st.confirmAccepted(first));
+-    String next = attempt();
++    String next = nextAttempt();
+     assertTrue(st.confirmAccepted(next));
+     ShadowSystemClock.advanceBy(Duration.ofMinutes(3));
+     st.correct(first, 200, 0, false, 0);
+@@ -467,12 +508,46 @@
      String id = st.observedAssignment(null, null, false);
      assertNotNull(id);
      assertEquals("ASIGNADO", st.find(id).status);
@@ -682,7 +725,7 @@
    public void extraDoesNotInventTrip() {
      st.manual(1300, 0, "Bono cobrado", false);
      assertEquals(1300, st.session().money, .001);
-@@ -754,7 +825,7 @@
+@@ -754,7 +829,7 @@
      CocoStore.closeForTests();
      st = CocoStore.get(c);
      assertEquals(200, st.session().money, .001);
