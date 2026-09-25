@@ -12,12 +12,13 @@
  
      compileOptions {
 --- a/app/src/main/java/com/cocotaxi/app/CocoDataStore.java	1969-12-31 18:00:00.000000000 -0600
-+++ b/app/src/main/java/com/cocotaxi/app/CocoDataStore.java	2026-09-25 16:20:02.913464207 -0500
-@@ -0,0 +1,150 @@
++++ b/app/src/main/java/com/cocotaxi/app/CocoDataStore.java	2026-09-25 16:25:41.572740385 -0500
+@@ -0,0 +1,171 @@
 +package com.cocotaxi.app;
 +
 +import android.content.Context;
 +import android.graphics.Rect;
++import android.database.sqlite.SQLiteDatabase;
 +import org.json.JSONObject;
 +import java.io.*;
 +import java.nio.charset.StandardCharsets;
@@ -40,6 +41,12 @@
 +    String month = Instant.ofEpochMilli(now).atZone(CocoStore.ZONE).toLocalDate()
 +        .toString().substring(0, 7);
 +    return new File(new File(context.getFilesDir(), "datos"), "observacion_" + month + ".jsonl");
++  }
++
++  public static File currentDatabase(Context context, long now) {
++    String month = Instant.ofEpochMilli(now).atZone(CocoStore.ZONE).toLocalDate()
++        .toString().substring(0, 7);
++    return new File(new File(context.getFilesDir(), "datos"), "coco_" + month + ".db");
 +  }
 +
 +  private static String area(String raw) {
@@ -93,6 +100,7 @@
 +
 +  private static void enqueue(Context context, JSONObject row, long now) {
 +    File file = currentFile(context.getApplicationContext(), now);
++    File database = currentDatabase(context.getApplicationContext(), now);
 +    File root = file.getParentFile();
 +    IO.execute(() -> {
 +      if (!root.exists() && !root.mkdirs()) return;
@@ -100,6 +108,19 @@
 +        out.write((row.toString() + "\n").getBytes(StandardCharsets.UTF_8));
 +      } catch (IOException e) {
 +        android.util.Log.w("COCO_DATA", "observation", e);
++      }
++      try (SQLiteDatabase db = SQLiteDatabase.openOrCreateDatabase(database, null)) {
++        db.execSQL("CREATE TABLE IF NOT EXISTS observations (id INTEGER PRIMARY KEY,"
++            + " at INTEGER NOT NULL,type TEXT NOT NULL,pickup TEXT,label TEXT,"
++            + " hourly REAL,heat INTEGER,payload TEXT NOT NULL)");
++        db.execSQL("CREATE INDEX IF NOT EXISTS observations_at ON observations(at,type)");
++        db.execSQL("INSERT INTO observations(at,type,pickup,label,hourly,heat,payload)"
++                + " VALUES(?,?,?,?,?,?,?)",
++            new Object[] {row.optLong("at"), row.optString("type"), row.optString("pickup"),
++                row.optString("label"), row.optDouble("hourly"), row.optInt("heat"),
++                row.toString()});
++      } catch (Exception e) {
++        android.util.Log.w("COCO_DATA", "monthly database", e);
 +      }
 +    });
 +  }
@@ -590,7 +611,7 @@
  
    @Test
 --- a/app/src/test/java/com/cocotaxi/app/StoreTest.java	2026-09-25 16:20:19.951728317 -0500
-+++ b/app/src/test/java/com/cocotaxi/app/StoreTest.java	2026-09-25 16:24:11.230836439 -0500
++++ b/app/src/test/java/com/cocotaxi/app/StoreTest.java	2026-09-25 16:25:42.360757260 -0500
 @@ -96,6 +96,14 @@
      return st.attempt(o, r, true);
    }
@@ -678,7 +699,7 @@
      assertTrue(st.confirmAccepted(next));
      ShadowSystemClock.advanceBy(Duration.ofMinutes(3));
      st.correct(first, 200, 0, false, 0);
-@@ -467,12 +508,46 @@
+@@ -467,12 +508,47 @@
      String id = st.observedAssignment(null, null, false);
      assertNotNull(id);
      assertEquals("ASIGNADO", st.find(id).status);
@@ -716,6 +737,7 @@
 +    }
 +    CocoDataStore.awaitWritesForTests();
 +    assertTrue(CocoDataStore.currentFile(c, System.currentTimeMillis()).isFile());
++    assertTrue(CocoDataStore.currentDatabase(c, System.currentTimeMillis()).isFile());
 +    assertTrue(CocoDataStore.forecasts(c, System.currentTimeMillis()).stream()
 +        .anyMatch(f -> f.place.equals(OfferParser.normalize(place))
 +            && f.samples >= 3 && Math.abs(f.medianHourly - 840) < .01));
@@ -725,7 +747,7 @@
    public void extraDoesNotInventTrip() {
      st.manual(1300, 0, "Bono cobrado", false);
      assertEquals(1300, st.session().money, .001);
-@@ -754,7 +829,7 @@
+@@ -754,7 +830,7 @@
      CocoStore.closeForTests();
      st = CocoStore.get(c);
      assertEquals(200, st.session().money, .001);
