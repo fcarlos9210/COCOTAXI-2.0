@@ -243,16 +243,16 @@ jobs:
           cd "$(dirname "$PROJECT_DIR")"
           zip -qr COCOTAXI_3.1.5_fuentes.zip "$(basename "$PROJECT_DIR")"
 
-      - name: Upload COCOTAXI 3.1 Core APK
+      - name: Upload COCOTAXI 3.1.5 APK
         uses: actions/upload-artifact@v4
         with:
           name: COCOTAXI-3.1.5-core-debug-apk
           path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
 
-      - name: Upload COCOTAXI 3.1 Core source
+      - name: Upload COCOTAXI 3.1.5 source
         uses: actions/upload-artifact@v4
         with:
           name: COCOTAXI-3.1.5-core-source
-          path: build-2.6.6/COCOTAXI_3.1.4_fuentes.zip
+          path: build-2.6.6/COCOTAXI_3.1.5_fuentes.zip
           if-no-files-found: error
