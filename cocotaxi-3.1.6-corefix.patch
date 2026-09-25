@@ -1,0 +1,538 @@
+--- a/app/build.gradle	2026-09-25 14:35:07.000000000 -0500
++++ b/app/build.gradle	2026-09-25 15:36:42.898510817 -0500
+@@ -10,8 +10,8 @@
+         applicationId 'com.cocotaxi.app'
+         minSdk 26
+         targetSdk 36
+-        versionCode 55
+-        versionName '3.1.5'
++        versionCode 56
++        versionName '3.1.6'
+     }
+ 
+     compileOptions {
+--- a/app/src/main/java/com/cocotaxi/app/CocoStore.java	2026-09-25 08:00:39.000000000 -0500
++++ b/app/src/main/java/com/cocotaxi/app/CocoStore.java	2026-09-25 15:34:58.392292044 -0500
+@@ -26,7 +26,7 @@
+   }
+ 
+   private CocoStore(Context c) {
+-    super(c, "cocotaxi_v3.db", null, 7);
++    super(c, "cocotaxi_v3.db", null, 8);
+     context = c.getApplicationContext();
+   }
+ 
+@@ -55,7 +55,7 @@
+         "CREATE TABLE trips(id TEXT PRIMARY KEY,session TEXT,at INTEGER,status TEXT,offered"
+             + " REAL,kind TEXT,estimate INTEGER,actual INTEGER,cost INTEGER,ordinary REAL,pair"
+             + " INTEGER DEFAULT 0,minutes REAL,accepted INTEGER,accepted_wall INTEGER DEFAULT 0,accepted_boot INTEGER DEFAULT -1,key TEXT,label TEXT,deleted INTEGER"
+-            + " DEFAULT 0,trip INTEGER DEFAULT 1,planned REAL DEFAULT 0,connected_adjusted INTEGER DEFAULT 0,connected_delta REAL DEFAULT 0)");
++            + " DEFAULT 0,trip INTEGER DEFAULT 1,planned REAL DEFAULT 0,connected_adjusted INTEGER DEFAULT 0,connected_delta REAL DEFAULT 0,prior_status TEXT DEFAULT '')");
+     d.execSQL("CREATE INDEX trips_session ON trips(session,at)");
+     ensureTripSessionTrigger(d);
+     d.execSQL("CREATE TABLE intervals(start INTEGER,end INTEGER,minutes REAL,session TEXT)");
+@@ -100,6 +100,14 @@
+         d.execSQL("UPDATE trips SET connected_delta=minutes WHERE connected_adjusted=1 AND deleted=0");
+       }
+     }
++    if (old < 8) {
++      if (!hasColumn(d, "trips", "prior_status"))
++        d.execSQL("ALTER TABLE trips ADD COLUMN prior_status TEXT DEFAULT ''");
++      // 3.1.3 kept this marker on deleted rows so restore() could add the historical time back.
++      // Migration 7 skipped them, leaving connected_delta at zero.
++      d.execSQL("UPDATE trips SET connected_delta=minutes WHERE deleted=1"
++          + " AND connected_adjusted=1 AND connected_delta=0");
++    }
+   }
+ 
+   private static void ensureTripSessionTrigger(SQLiteDatabase d) {
+@@ -482,6 +490,9 @@
+     if (!t.status.equals("ASIGNADO") && !t.status.equals("FINALIZADO")) return;
+     ContentValues v = new ContentValues();
+     v.put("status", "SIN CONFIRMAR");
++    v.put("prior_status", t.status);
++    if ("ASIGNADO".equals(t.status))
++      v.put("minutes", Math.max(0, t.minutes) + activeSegmentMinutes(t));
+     v.put("accepted", 0);
+     v.put("accepted_wall", 0);
+     v.put("accepted_boot", boot());
+@@ -493,15 +504,31 @@
+   public synchronized void reconfirm(String id) {
+     Trip t = find(id);
+     if (t == null || t.deleted || !t.status.equals("SIN CONFIRMAR")) return;
++    Session s = session();
++    boolean resume = "ASIGNADO".equals(t.priorStatus)
++        && s.active && t.session.equals(s.id) && activeTrip() == null;
++    boolean finalized = "FINALIZADO".equals(t.priorStatus) ||
++        ("ASIGNADO".equals(t.priorStatus) && !resume);
++    // Legacy unconfirmed records without a persisted origin cannot safely be re-anchored.
++    if (!resume && !finalized) finalized = true;
+     ContentValues v = new ContentValues();
+-    // If it already has recorded service minutes it had finished; otherwise resume as active.
+-    v.put("status", t.minutes > 0 ? "FINALIZADO" : "ASIGNADO");
+-    if (t.minutes <= 0 && t.accepted <= 0) {
++    v.put("status", resume ? "ASIGNADO" : "FINALIZADO");
++    v.put("prior_status", "");
++    if (resume && !s.paused && !s.recovering) {
+       v.put("accepted", SystemClock.elapsedRealtime());
+       v.put("accepted_wall", System.currentTimeMillis());
+       v.put("accepted_boot", boot());
+     }
+-    getWritableDatabase().update("trips", v, "id=?", new String[] {id});
++    SQLiteDatabase db = getWritableDatabase();
++    db.beginTransaction();
++    try {
++      db.update("trips", v, "id=? AND status='SIN CONFIRMAR'", new String[] {id});
++      if (finalized && s.active && t.session.equals(s.id) && activeTrip() == null)
++        promoteNext(db, t.session);
++      db.setTransactionSuccessful();
++    } finally {
++      db.endTransaction();
++    }
+     touch();
+   }
+ 
+@@ -657,6 +684,7 @@
+       // either payment or duration. Keep the record for manual confirmation and resume searching.
+       ContentValues v = new ContentValues();
+       v.put("status", "SIN CONFIRMAR");
++      v.put("prior_status", "ASIGNADO");
+       v.put("accepted", 0);
+       v.put("accepted_wall", 0);
+       v.put("accepted_boot", boot());
+@@ -735,6 +763,13 @@
+   }
+ 
+   public synchronized void status(String id, String status) {
++    if ("SIN CONFIRMAR".equals(status)) {
++      Trip t = find(id);
++      if (t != null && ("ASIGNADO".equals(t.status) || "FINALIZADO".equals(t.status))) {
++        unconfirm(id);
++        return;
++      }
++    }
+     ContentValues v = new ContentValues();
+     v.put("status", status);
+     getWritableDatabase().update("trips", v, "id=?", new String[] {id});
+@@ -998,7 +1033,7 @@
+         getReadableDatabase()
+             .rawQuery(
+                 "SELECT"
+-                    + " id,session,at,status,offered,kind,estimate,actual,cost,ordinary,pair,minutes,accepted,accepted_wall,accepted_boot,key,label,deleted,planned,connected_adjusted,trip,connected_delta"
++                    + " id,session,at,status,offered,kind,estimate,actual,cost,ordinary,pair,minutes,accepted,accepted_wall,accepted_boot,key,label,deleted,planned,connected_adjusted,trip,connected_delta,prior_status"
+                     + " FROM trips WHERE "
+                     + where
+                     + " ORDER BY at DESC",
+@@ -1028,6 +1063,7 @@
+         t.connectedAdjusted = q.getInt(19) == 1;
+         t.trip = q.getInt(20) == 1;
+         t.connectedDelta = q.getDouble(21);
++        t.priorStatus = q.getString(22);
+         out.add(t);
+       }
+     }
+@@ -1200,7 +1236,7 @@
+   }
+ 
+   public static class Trip {
+-    public String id, session, status, kind, key, label;
++    public String id, session, status, priorStatus, kind, key, label;
+     public long at, accepted, acceptedWall;
+     public int acceptedBoot;
+     public boolean confirmed, pair, deleted, connectedAdjusted, trip;
+--- a/app/src/main/java/com/cocotaxi/app/CocotaxiAccessibilityService.java	2026-09-25 07:50:22.000000000 -0500
++++ b/app/src/main/java/com/cocotaxi/app/CocotaxiAccessibilityService.java	2026-09-25 15:34:13.655329492 -0500
+@@ -478,6 +478,8 @@
+       CocoStore.Session session = sessionSnapshot(store, false);
+       if (!session.active) {
+         CocotaxiOverlayService.clearOffer();
++        stableKey = "";
++        stableAt = 0L;
+         return;
+       }
+ 
+@@ -528,9 +530,10 @@
+         if (!list && hasAccept) {
+           Offer direct = OfferParser.parseNormalized(text, normalized, CABIFY);
+           boolean fused = false;
+-          if (!direct.hasEnoughForDecision()
++          if ((!direct.hasEnoughForDecision() || !direct.fareFractionVisible)
+               && recentOcrOffer != null
+-              && SystemClock.elapsedRealtime() - recentOcrAt <= 5000) {
++              && SystemClock.elapsedRealtime() - recentOcrAt <= 5000
++              && OfferParser.sameOffer(direct, recentOcrOffer)) {
+             Offer merged = OfferParser.merge(direct, recentOcrOffer);
+             if (merged != null && merged.hasEnoughForDecision()) {
+               direct = merged;
+@@ -546,12 +549,15 @@
+             previous = single;
+             previousAt = SystemClock.elapsedRealtime();
+             handleOffers(root, tree, single, fused, false, true, session, fused);
++            if (!direct.fareFractionVisible && Build.VERSION.SDK_INT >= 30)
++              requestScreenshot(root.getWindowId(), true);
+             if ((direct.pickupArea.isEmpty() || direct.destinationArea.isEmpty())
+                 && Build.VERSION.SDK_INT >= 30) requestScreenshot(root.getWindowId());
+             diagnostic = fused ? "Oferta confirmada por Accessibility + OCR" : "Oferta detectada al instante";
+             return;
+           }
+-          if (recentOcrOffer != null && SystemClock.elapsedRealtime() - recentOcrAt <= 5000) {
++          if (recentOcrOffer != null && SystemClock.elapsedRealtime() - recentOcrAt <= 5000
++              && OfferParser.sameOffer(direct, recentOcrOffer)) {
+             annotateOffer(recentOcrOffer);
+             List<Offer> single = Collections.singletonList(recentOcrOffer);
+             rememberDetail(single, true);
+@@ -576,6 +582,8 @@
+           previous = cards;
+           previousAt = SystemClock.elapsedRealtime();
+           handleOffers(root, tree, cards, false, list, hasAccept, session, false);
++          if (hasAccept && resultNeedsOcr(cards) && Build.VERSION.SDK_INT >= 30)
++            requestScreenshot(root.getWindowId(), true);
+           diagnostic = "Leyendo " + cards.size() + " ofertas visibles";
+         } else {
+           stableKey = "";
+@@ -649,7 +657,8 @@
+     // Critical ordering: decide -> click Cabify -> persist -> draw overlay. Window rendering must never
+     // delay the Accept action.
+     lastDispatchNs = 0L;
+-    int click = maybeClick(root, tree, cards, v, result, list, hasAccept, requireStable);
++    int click = maybeClick(root, tree, cards, v, result, list, hasAccept, requireStable,
++        fromOcr);
+     long completedNs = SystemClock.elapsedRealtimeNanos();
+     if (result.accept && v.autoAccept && click != CLICK_NONE) {
+       long dispatchNs = lastDispatchNs > 0L ? lastDispatchNs : completedNs;
+@@ -668,12 +677,15 @@
+   private int maybeClick(
+       AccessibilityNodeInfo root, TextCollector.Snapshot tree, List<Offer> cards,
+       SettingsStore.Values v, DecisionEngine.Result r, boolean list, boolean hasAccept,
+-      boolean requireStable) {
++      boolean requireStable, boolean fromOcr) {
+     if (!hasAccept || cards.isEmpty()) {
+       stableKey = "";
+       return CLICK_NONE;
+     }
+     if (!v.autoAccept || r == null || !r.accept) return CLICK_NONE;
++    // Accessibility often omits the comma and cents. Show the estimate, but never automatically
++    // accept a rounded amount until a compatible OCR reading confirms the fare.
++    if (!fromOcr && r.offer != null && !r.offer.fareFractionVisible) return CLICK_NONE;
+     if (!canTargetAccept(cards, tree.acceptCount, list, r.offer)) {
+       stableKey = "";
+       return CLICK_NONE;
+@@ -732,6 +744,11 @@
+     return offer.bottom > offer.top;
+   }
+ 
++  private static boolean resultNeedsOcr(List<Offer> cards) {
++    for (Offer card : cards) if (card.hasFare() && !card.fareFractionVisible) return true;
++    return false;
++  }
++
+   private boolean tapAcceptWithGesture(Rect b) {
+     if (Build.VERSION.SDK_INT < 24 || b == null || b.isEmpty()) return false;
+     Path path = new Path();
+@@ -788,6 +805,8 @@
+       else takeScreenshot(Display.DEFAULT_DISPLAY, screenshotExecutor, cb);
+     } catch (Exception e) {
+       busy = false;
++      diagnostic = "Captura OCR no disponible; usa captura de respaldo";
++      android.util.Log.w("COCO_ACCESS", "requestScreenshot", e);
+     }
+   }
+ 
+@@ -971,6 +990,8 @@
+     destroyed = true;
+     handler.removeCallbacksAndMessages(null);
+     instance = null;
++    stableKey = "";
++    stableAt = 0L;
+     if (ocr != null) ocr.close();
+     screenshotExecutor.shutdownNow();
+     CocotaxiOverlayService.clearOffer();
+--- a/app/src/main/java/com/cocotaxi/app/CocotaxiOverlayService.java	2026-09-25 14:33:47.000000000 -0500
++++ b/app/src/main/java/com/cocotaxi/app/CocotaxiOverlayService.java	2026-09-25 15:35:14.764646482 -0500
+@@ -25,6 +25,7 @@
+   private long tickSessionAt, tickRevision = -1L;
+   private long shownAt;
+   private long holdUntil;
++  private boolean minimized = true;
+   private static final long RESULT_VISIBLE_MS = 4000L;
+   private String lastKey = "";
+   private android.media.ToneGenerator tone;
+@@ -365,6 +366,7 @@
+         + (r.provisional ? " · provisional" : "")
+         + (fromOcr ? " · OCR" : ""));
+     panel.setBackground(expandedPanelBackground());
++    minimized = false;
+     icon.setVisibility(View.GONE);
+     handle.setVisibility(View.VISIBLE);
+     close.setVisibility(View.VISIBLE);
+@@ -410,7 +412,8 @@
+   }
+ 
+   private void hideCard() {
+-    if (panel == null) return;
++    if (panel == null || minimized) return;
++    minimized = true;
+     holdUntil = 0L;
+     handle.setVisibility(View.GONE);
+     summary.setVisibility(View.GONE);
+--- a/app/src/main/java/com/cocotaxi/app/LicenseApiClient.java	2026-09-25 07:50:22.000000000 -0500
++++ b/app/src/main/java/com/cocotaxi/app/LicenseApiClient.java	2026-09-25 15:35:15.380659811 -0500
+@@ -86,6 +86,7 @@
+   private static final class UrlConnectionTransport implements Transport {
+     @Override public HttpResponse post(String url, String json) throws IOException {
+       HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
++      try {
+       c.setConnectTimeout(4000);
+       c.setReadTimeout(5000);
+       c.setRequestMethod("POST");
+@@ -98,8 +99,10 @@
+       int code = c.getResponseCode();
+       InputStream in = code >= 200 && code < 400 ? c.getInputStream() : c.getErrorStream();
+       String body = in == null ? "" : readAll(in);
+-      c.disconnect();
+       return new HttpResponse(code, body);
++      } finally {
++        c.disconnect();
++      }
+     }
+ 
+     private static String readAll(InputStream in) throws IOException {
+--- a/app/src/main/java/com/cocotaxi/app/Offer.java	2026-09-25 07:50:22.000000000 -0500
++++ b/app/src/main/java/com/cocotaxi/app/Offer.java	2026-09-25 15:33:51.714838908 -0500
+@@ -12,6 +12,8 @@
+   public int destinationHeat = -1;
+   public boolean zoneEvidence;
+   public double fare = -1.0;
++  /** The currency text explicitly contained two decimal digits, or OCR confirmed the amount. */
++  public boolean fareFractionVisible;
+   public double pickupKm = -1.0;
+   public double pickupMin = -1.0;
+   public double tripKm = -1.0;
+--- a/app/src/main/java/com/cocotaxi/app/OfferParser.java	2026-09-25 07:53:06.000000000 -0500
++++ b/app/src/main/java/com/cocotaxi/app/OfferParser.java	2026-09-25 15:35:16.092675213 -0500
+@@ -74,7 +74,10 @@
+     o.kind = s.contains("para ti") ? "PARA_TI" : s.contains("en app") ? "EN_APP" : "UNKNOWN";
+ 
+     PricePick fare = pickFare(s);
+-    if (fare != null) o.fare = fare.value;
++    if (fare != null) {
++      o.fare = fare.value;
++      o.fareFractionVisible = fare.hasCents;
++    }
+     o.tolls = pickTolls(s);
+ 
+     Matcher m = MIN.matcher(s);
+@@ -118,8 +121,8 @@
+       // Use the local price context: a flattened tree can also contain unrelated tolls, bonuses
+       // and balances far away from the actual fare on the same line.
+       String context = s.substring(Math.max(0, m.start() - 18), Math.min(s.length(), m.end() + 12));
+-      if (context.contains("peaje") || excludedPriceContext(context)) continue;
+       String line = lineAt(s, m.start());
++      if (context.contains("peaje") || excludedPriceContext(context)) continue;
+       int end = Math.min(s.length(), m.end() + 18);
+       String suffix = s.substring(m.end(), end);
+       if (suffix.matches("(?s)^\\s*(?:/|por\\s+)(?:h|hora|km)\\b.*")) continue;
+@@ -141,12 +144,19 @@
+       if (around.contains("aceptar")) score += 2;
+       String prefix = s.substring(Math.max(0, m.start() - 18), m.start());
+       if (prefix.contains("saldo") || prefix.contains("billetera") || prefix.contains("ganancias")) score -= 12;
+-      candidates.add(new PricePick(value, score, m.start()));
++      // The line can be long or flattened. A wallet amount is never a trip fare merely because
++      // there is an Accept button and two durations elsewhere on the screen.
++      boolean walletLine = line.matches("(?s).*\\b(?:saldo|billetera|ganancias|retirar)\\b.*");
++      boolean adjacentFare = score >= 16;
++      if (walletLine && !adjacentFare) continue;
++      if (score < 7) continue;
++      boolean cents = m.group(1).matches("(?s).*[,.]\\s*[0-9]{2}");
++      candidates.add(new PricePick(value, score, m.start(), cents));
+     }
+     if (candidates.isEmpty()) return null;
+     candidates.sort((a, b) -> a.score != b.score ? Integer.compare(b.score, a.score) : Integer.compare(b.pos, a.pos));
+     PricePick best = candidates.get(0);
+-    if (candidates.size() == 1) return best.score >= 0 ? best : null;
++    if (candidates.size() == 1) return best;
+     PricePick second = candidates.get(1);
+     // With an explicit Cabify offer marker, a clearly better candidate is safe. Without one, refuse
+     // to guess between two unrelated monetary amounts.
+@@ -187,7 +197,10 @@
+   private static final class PricePick {
+     final double value;
+     final int score, pos;
+-    PricePick(double value, int score, int pos) { this.value = value; this.score = score; this.pos = pos; }
++    final boolean hasCents;
++    PricePick(double value, int score, int pos, boolean hasCents) {
++      this.value = value; this.score = score; this.pos = pos; this.hasCents = hasCents;
++    }
+   }
+ 
+   /**
+@@ -205,6 +218,8 @@
+         && Math.abs(out.fare - Math.rint(out.fare)) < .001
+         && secondary.fare > out.fare && secondary.fare < out.fare + 1)
+       out.fare = secondary.fare; // OCR saw cents that the accessibility tree omitted.
++    if (secondary.hasFare() && Math.abs(out.fare - secondary.fare) < .011)
++      out.fareFractionVisible = true; // A compatible OCR read verified even an integer amount.
+     if (!out.hasPickup() && secondary.hasPickup()) out.pickupMin = secondary.pickupMin;
+     if (!out.hasTrip() && secondary.hasTrip()) out.tripMin = secondary.tripMin;
+     if (out.pickupKm < 0 && secondary.pickupKm >= 0) out.pickupKm = secondary.pickupKm;
+@@ -227,6 +242,12 @@
+     return true;
+   }
+ 
++  public static boolean sameOffer(Offer a, Offer b) {
++    return a != null && b != null && a.hasOfferSignal && b.hasOfferSignal
++        && ((a.hasFare() && b.hasFare()) || (a.hasPickup() && b.hasPickup())
++            || (a.hasTrip() && b.hasTrip())) && compatible(a, b);
++  }
++
+   private static Offer copy(Offer a) {
+     if (a == null) return null;
+     Offer o = new Offer();
+@@ -243,6 +264,7 @@
+     o.destinationHeat = a.destinationHeat;
+     o.zoneEvidence = a.zoneEvidence;
+     o.fare = a.fare;
++    o.fareFractionVisible = a.fareFractionVisible;
+     o.pickupKm = a.pickupKm;
+     o.pickupMin = a.pickupMin;
+     o.tripKm = a.tripKm;
+--- a/app/src/main/java/com/cocotaxi/app/ScreenOcrEngine.java	2026-09-25 07:50:22.000000000 -0500
++++ b/app/src/main/java/com/cocotaxi/app/ScreenOcrEngine.java	2026-09-25 15:36:28.458209787 -0500
+@@ -74,15 +74,7 @@
+   private Frame frame(Text result) {
+     List<Text.Line> source = new ArrayList<>();
+     for (Text.TextBlock block : result.getTextBlocks()) source.addAll(block.getLines());
+-    source.sort(
+-        (a, b) -> {
+-          Rect x = a.getBoundingBox(), y = b.getBoundingBox();
+-          if (x == null || y == null) return 0;
+-          int tolerance = Math.max(8, Math.min(x.height(), y.height()) / 2);
+-          return Math.abs(x.top - y.top) <= tolerance
+-              ? Integer.compare(x.left, y.left)
+-              : Integer.compare(x.top, y.top);
+-        });
++    source.sort((a, b) -> compareBounds(a.getBoundingBox(), b.getBoundingBox()));
+     StringBuilder sb = new StringBuilder();
+     List<LineInfo> lines = new ArrayList<>(source.size());
+     for (Text.Line line : source) {
+@@ -92,4 +84,11 @@
+     }
+     return new Frame(sb.toString(), lines);
+   }
++
++  static int compareBounds(Rect x, Rect y) {
++    if (x == null) return y == null ? 0 : 1;
++    if (y == null) return -1;
++    int row = Integer.compare(x.top, y.top);
++    return row != 0 ? row : Integer.compare(x.left, y.left);
++  }
+ }
+--- a/app/src/test/java/com/cocotaxi/app/FormulaTest.java	2026-09-25 07:54:32.000000000 -0500
++++ b/app/src/test/java/com/cocotaxi/app/FormulaTest.java	2026-09-25 15:36:35.882362767 -0500
+@@ -2,6 +2,7 @@
+ 
+ import static org.junit.Assert.*;
+ 
++import android.graphics.Rect;
+ import org.junit.Test;
+ 
+ public class FormulaTest {
+@@ -173,6 +174,36 @@
+     Offer ocr = OfferParser.parse("$398,97 para ti" + legs, "com.cabify.driver");
+     assertEquals(398.97, OfferParser.merge(integer, ocr).fare, .001);
+     assertEquals("$398,97", Money.format(OfferParser.merge(integer, ocr).fare));
++    assertFalse(integer.fareFractionVisible);
++    assertTrue(OfferParser.merge(integer, ocr).fareFractionVisible);
++  }
++
++  @Test
++  public void longWalletLineIsNotATripFare() {
++    Offer o = OfferParser.parse(
++        "Saldo disponible para retirar ahora: $500\n3 min\n9 min\nAceptar viaje",
++        "com.cabify.driver");
++    assertFalse(o.hasEnoughForDecision());
++    assertFalse(o.hasFare());
++  }
++
++  @Test
++  public void ocrLineOrderingIsTransitiveForStaggeredRows() {
++    Rect a = new Rect(90, 0, 110, 20);
++    Rect b = new Rect(10, 8, 30, 28);
++    Rect c = new Rect(50, 16, 70, 36);
++    assertTrue(ScreenOcrEngine.compareBounds(a, b) < 0);
++    assertTrue(ScreenOcrEngine.compareBounds(b, c) < 0);
++    assertTrue(ScreenOcrEngine.compareBounds(a, c) < 0);
++  }
++
++  @Test
++  public void walletAndRealFareOnSeparateLinesSelectFare() {
++    Offer o = OfferParser.parse(
++        "Saldo disponible para retirar ahora: $500\n$398,97 para ti\n3 min\n9 min\nAceptar viaje",
++        "com.cabify.driver");
++    assertTrue(o.hasEnoughForDecision());
++    assertEquals(398.97, o.fare, .001);
+   }
+ 
+   @Test
+--- a/app/src/test/java/com/cocotaxi/app/StoreTest.java	2026-09-25 08:00:44.000000000 -0500
++++ b/app/src/test/java/com/cocotaxi/app/StoreTest.java	2026-09-25 15:35:42.173223201 -0500
+@@ -3,6 +3,7 @@
+ import static org.junit.Assert.*;
+ 
+ import android.content.Context;
++import android.database.sqlite.SQLiteDatabase;
+ import java.time.Duration;
+ import org.junit.*;
+ import org.junit.runner.RunWith;
+@@ -174,6 +175,51 @@
+   }
+ 
+   @Test
++  public void unconfirmActiveKeepsCheckpointAndReconfirmResumesFromThere() {
++    String id = attempt();
++    st.confirmAccepted(id);
++    ShadowSystemClock.advanceBy(Duration.ofMinutes(4));
++    st.unconfirm(id);
++    assertEquals("ASIGNADO", st.find(id).priorStatus);
++    assertEquals(4, st.find(id).minutes, .02);
++    ShadowSystemClock.advanceBy(Duration.ofMinutes(2));
++    st.reconfirm(id);
++    assertEquals("ASIGNADO", st.find(id).status);
++    ShadowSystemClock.advanceBy(Duration.ofMinutes(1));
++    assertEquals(5, st.session().service, .02);
++  }
++
++  @Test
++  public void zeroMinuteFinalizedNeverReactivatesAndPromotesQueuedRide() {
++    String current = attempt();
++    st.confirmAccepted(current);
++    String next = attempt();
++    st.confirmAccepted(next);
++    st.complete(current);
++    // A finalized zero-minute ride stays finalized even after a reversible confirmation edit.
++    st.unconfirm(current);
++    st.reconfirm(current);
++    assertEquals("FINALIZADO", st.find(current).status);
++    assertEquals(next, st.activeTrip().id);
++  }
++
++  @Test
++  public void deletedManualFromVersionSevenRestoresConnectedTime() {
++    st.stop();
++    String id = st.manual(200, 10, "historical");
++    st.delete(id);
++    assertEquals(0, st.session().minutes, .001);
++    SQLiteDatabase db = st.getWritableDatabase();
++    db.execSQL("UPDATE trips SET connected_delta=0 WHERE id=?", new Object[] {id});
++    db.setVersion(7);
++    CocoStore.closeForTests();
++    st = CocoStore.get(c);
++    assertEquals(10, st.find(id).connectedDelta, .001);
++    st.restore(id);
++    assertEquals(10, st.session().minutes, .001);
++  }
++
++  @Test
+   public void otherDriverWins() {
+     String id = attempt();
+     st.observe("Otro conductor aceptó el viaje");
