@@ -1,0 +1,56 @@
+--- a/app/build.gradle
++++ b/app/build.gradle
+@@ -10,8 +10,8 @@
+         applicationId 'com.cocotaxi.app'
+         minSdk 26
+         targetSdk 36
+-        versionCode 54
+-        versionName '3.1.4'
++        versionCode 55
++        versionName '3.1.5'
+     }
+ 
+     compileOptions {
+--- a/app/src/main/java/com/cocotaxi/app/CocotaxiOverlayService.java
++++ b/app/src/main/java/com/cocotaxi/app/CocotaxiOverlayService.java
+@@ -353,12 +353,12 @@
+     decision.setTextColor(0xfff7d93d);
+     amount.setText(Money.format(r.payout));
+     amount.setContentDescription("Cobro estimado " + Money.exact(r.payout));
+-    decision.setText(r.accept ? "ACEPTABLE" : r.label());
+-    decision.setAutoSizeTextTypeUniformWithConfiguration(r.accept ? 13 : 11, r.accept ? 22 : 18, 1, 2);
++    decision.setText(r.accept ? "ACEPTABLE" : "RECHAZA");
++    decision.setAutoSizeTextTypeUniformWithConfiguration(r.accept ? 13 : 10, r.accept ? 22 : 16, 1, 2);
+     reason.setVisibility(r.accept ? View.VISIBLE : View.GONE);
+     reason.setText(r.promoFeasible ? "PROMO CONDICIONADA"
+         : r.accept ? (r.projected >= SettingsStore.resolveRealGoalHour(SettingsStore.load(this))
+-            ? "CUMPLE OBJETIVO" : "CUMPLE FILTRO") : "BAJO EL FILTRO");
++            ? "CUMPLE OBJETIVO" : "CUMPLE FILTRO") : "");
+     reason.setContentDescription(r.reason);
+     summary.setText("Oferta " + position + " de " + count + " visibles · cobro estimado"
+         + (r.minutes > r.offer.totalMinutes() ? " · total incluye esperas" : "")
+--- a/app/src/test/java/com/cocotaxi/app/OverlayTest.java
++++ b/app/src/test/java/com/cocotaxi/app/OverlayTest.java
+@@ -131,10 +131,11 @@
+         2,
+         3,
+         false);
+-    assertEquals("RECHAZAR", label.getText().toString());
++    assertEquals("RECHAZA", label.getText().toString());
+     java.lang.reflect.Field rf = CocotaxiOverlayService.class.getDeclaredField("reason");
+     rf.setAccessible(true);
+     assertEquals(View.GONE, ((View) rf.get(service)).getVisibility());
++    assertEquals("", ((android.widget.TextView) rf.get(service)).getText().toString());
+     java.lang.reflect.Field cf = CocotaxiOverlayService.class.getDeclaredField("close");
+     cf.setAccessible(true);
+     android.widget.TextView close = (android.widget.TextView) cf.get(service);
+--- /dev/null
++++ b/CAMBIOS_3.1.5.md
+@@ -0,0 +1,7 @@
++# COCOTAXI 3.1.5 — ajuste de la ventana flotante
++
++- En la decisión de rechazo se muestra únicamente «RECHAZA».
++- Se elimina el texto «BAJO EL FILTRO» y se reduce ligeramente el tamaño máximo de la palabra para que quepa en el botón.
++- Se actualiza la prueba de la ventana flotante para verificar ambas condiciones.
++
++Los demás hallazgos de la auditoría 3.1.4 siguen pendientes; esta versión contiene únicamente el ajuste visual solicitado.
