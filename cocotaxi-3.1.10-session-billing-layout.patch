@@ -14,7 +14,7 @@ index c0a4578..b216a24 100644
  
      compileOptions {
 diff --git a/app/src/main/java/com/cocotaxi/app/CocoStore.java b/app/src/main/java/com/cocotaxi/app/CocoStore.java
-index a5e4cf5..103c1f2 100644
+index a5e4cf5..a7afb30 100644
 --- a/app/src/main/java/com/cocotaxi/app/CocoStore.java
 +++ b/app/src/main/java/com/cocotaxi/app/CocoStore.java
 @@ -643,6 +643,26 @@ public final class CocoStore extends SQLiteOpenHelper {
@@ -34,8 +34,8 @@ index a5e4cf5..103c1f2 100644
 +    try (Cursor q = getReadableDatabase().rawQuery(
 +        "SELECT COALESCE(SUM((COALESCE(actual,estimate)-COALESCE(cost,0))/100.0),0)"
 +            + " FROM trips WHERE deleted=0 AND trip=1 AND status='FINALIZADO'"
-+            + " AND (CASE WHEN origin='MANUAL' OR completed_at<=0 THEN at ELSE completed_at END)>=?"
-+            + " AND (CASE WHEN origin='MANUAL' OR completed_at<=0 THEN at ELSE completed_at END)<?",
++            + " AND (CASE WHEN origin='MANUAL' OR completed_at<=0 THEN at ELSE completed_at END)>=CAST(? AS INTEGER)"
++            + " AND (CASE WHEN origin='MANUAL' OR completed_at<=0 THEN at ELSE completed_at END)<CAST(? AS INTEGER)",
 +        new String[] {Long.toString(start), Long.toString(end)})) {
 +      return q.moveToFirst() ? q.getDouble(0) : 0;
 +    }
