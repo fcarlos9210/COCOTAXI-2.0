@@ -1,0 +1,208 @@
+--- a/app/build.gradle
++++ b/app/build.gradle
+@@ -10,8 +10,8 @@
+         applicationId 'com.cocotaxi.app'
+         minSdk 26
+         targetSdk 36
+-        versionCode 57
+-        versionName '3.1.7'
++        versionCode 58
++        versionName '3.1.8'
+     }
+ 
+     compileOptions {
+--- a/app/src/main/java/com/cocotaxi/app/CocotaxiOverlayService.java
++++ b/app/src/main/java/com/cocotaxi/app/CocotaxiOverlayService.java
+@@ -176,12 +176,7 @@
+     panel = new LinearLayout(this);
+     panel.setOrientation(LinearLayout.VERTICAL);
+     panel.setPadding(dp(5), dp(5), dp(5), dp(5));
+-    GradientDrawable bg =
+-        new GradientDrawable(
+-            GradientDrawable.Orientation.TOP_BOTTOM, new int[] {0xff0d2438, 0xff03111d});
+-    bg.setCornerRadius(dp(18));
+-    bg.setStroke(dp(2), 0xff2f7df6);
+-    panel.setBackground(bg);
++    panel.setBackground(minimizedPanelBackground());
+     LinearLayout top = new LinearLayout(this);
+     top.setGravity(Gravity.CENTER_VERTICAL);
+     panel.addView(top);
+@@ -196,9 +191,10 @@
+     handle = text("COCO · OFERTA", 11, 0xff7f93a8);
+     handle.setGravity(Gravity.CENTER);
+     top.addView(handle, new LinearLayout.LayoutParams(0, dp(34), 1));
+-    close = text("×", 40, Color.WHITE);
++    close = text("×", 36, Color.WHITE);
+     close.setGravity(Gravity.CENTER);
+     close.setTypeface(null, android.graphics.Typeface.BOLD);
++    close.setPadding(dp(5), 0, dp(5), dp(9));
+     close.setContentDescription("Ocultar esta oferta");
+     top.addView(close, new LinearLayout.LayoutParams(dp(48), dp(42)));
+     close.setOnClickListener(v -> { dismissedKey = lastKey; hideCard(); });
+@@ -356,11 +352,8 @@
+     amount.setContentDescription("Cobro estimado " + Money.exact(r.payout));
+     decision.setText(r.accept ? "ACEPTABLE" : "RECHAZA");
+     decision.setAutoSizeTextTypeUniformWithConfiguration(r.accept ? 13 : 10, r.accept ? 22 : 16, 1, 2);
+-    reason.setVisibility(r.accept ? View.VISIBLE : View.GONE);
+-    reason.setText(r.promoFeasible ? "PROMO CONDICIONADA"
+-        : r.accept ? (r.projected >= SettingsStore.resolveRealGoalHour(SettingsStore.load(this))
+-            ? "CUMPLE OBJETIVO" : "CUMPLE FILTRO") : "");
+-    reason.setContentDescription(r.reason);
++    reason.setText("");
++    reason.setVisibility(View.GONE);
+     summary.setText("Oferta " + position + " de " + count + " visibles · cobro estimado"
+         + (r.minutes > r.offer.totalMinutes() ? " · total incluye esperas" : "")
+         + (r.provisional ? " · provisional" : "")
+@@ -391,9 +384,8 @@
+     if (panel == null || metrics.getVisibility() != View.VISIBLE) return;
+     decision.setText(success ? "ACEPTABLE" : "ERROR");
+     decision.setTextColor(success ? 0xfff7d93d : 0xffff7a8a);
+-    reason.setVisibility(View.VISIBLE);
+-    reason.setText(success ? "ACEPTADO AUTOMÁTICAMENTE" : "NO SE PUDO ACEPTAR");
+-    reason.setTextColor(success ? 0xffdce7ee : 0xffffc2ca);
++    reason.setText("");
++    reason.setVisibility(View.GONE);
+     holdUntil = SystemClock.elapsedRealtime() + RESULT_VISIBLE_MS;
+   }
+ 
+--- a/app/src/main/java/com/cocotaxi/app/CocotaxiAccessibilityService.java
++++ b/app/src/main/java/com/cocotaxi/app/CocotaxiAccessibilityService.java
+@@ -16,7 +16,9 @@
+   public static final String CABIFY = "com.cabify.driver";
+   public static CocotaxiAccessibilityService instance;
+   public static String diagnostic = "Activa Accesibilidad para leer Cabify";
++  public static String autoAcceptStatus = "Sin oferta evaluada";
+   private final Handler handler = new Handler(Looper.getMainLooper());
++  private final Runnable stableRetry = () -> { if (!destroyed) safeInspect(null); };
+   private ScreenOcrEngine ocr;
+   private final MapDemandVision zoneVision = new MapDemandVision();
+   private volatile boolean processing;
+@@ -695,19 +697,28 @@
+       boolean requireStable, boolean fromOcr) {
+     if (!hasAccept || cards.isEmpty()) {
+       stableKey = "";
++      autoAcceptStatus = "Cabify no expone un botón Aceptar";
+       return CLICK_NONE;
+     }
+-    if (!v.autoAccept || r == null || !r.accept) return CLICK_NONE;
++    if (!v.autoAccept) { autoAcceptStatus = "Desactivado en Ajustes"; return CLICK_NONE; }
++    if (r == null || !r.accept) { autoAcceptStatus = "Oferta fuera del filtro"; return CLICK_NONE; }
+     // Accessibility often omits the comma and cents. Show the estimate, but never automatically
+     // accept a rounded amount until a compatible OCR reading confirms the fare.
+-    if (!fromOcr && r.offer != null && !r.offer.fareFractionVisible) return CLICK_NONE;
++    if (!fromOcr && r.offer != null && !r.offer.fareFractionVisible) {
++      autoAcceptStatus = "Esperando confirmar importe y centavos por OCR";
++      return CLICK_NONE;
++    }
+     if (!canTargetAccept(cards, tree.acceptCount, list, r.offer)) {
+       stableKey = "";
++      autoAcceptStatus = "No se puede asociar la oferta a un botón único";
+       return CLICK_NONE;
+     }
+     CocoStore store = CocoStore.get(this);
+     // Cabify permits one consecutive ride. Never click a third offer while one is already queued.
+-    if (cachedTrip != null && store.nextTrip() != null) return CLICK_NONE;
++    if (cachedTrip != null && store.nextTrip() != null) {
++      autoAcceptStatus = "Ya existe un siguiente viaje";
++      return CLICK_NONE;
++    }
+ 
+     long now = SystemClock.elapsedRealtime();
+     String key = r.offer.key + "@" + r.offer.top;
+@@ -715,15 +726,25 @@
+       if (!stableKey.equals(key)) {
+         stableKey = key;
+         stableAt = now;
++        autoAcceptStatus = "Confirmando oferta OCR";
++        handler.removeCallbacks(stableRetry);
++        handler.postDelayed(stableRetry, 110L);
++        return CLICK_NONE;
++      }
++      if (now - stableAt < 80) {
++        handler.removeCallbacks(stableRetry);
++        handler.postDelayed(stableRetry, 90L);
+         return CLICK_NONE;
+       }
+-      if (now - stableAt < 80) return CLICK_NONE;
+     } else {
+       stableKey = key;
+       stableAt = now;
+     }
+     if (now - clickedAt < 1200
+-        || now - attemptedKeys.getOrDefault(r.offer.key, -60001L) < 60000) return CLICK_NONE;
++        || now - attemptedKeys.getOrDefault(r.offer.key, -60001L) < 60000) {
++      autoAcceptStatus = "Pulsación reciente; evitando duplicado";
++      return CLICK_NONE;
++    }
+ 
+     // Reserve the debounce before dispatching: ACTION_CLICK may immediately generate a click event.
+     clickedAt = now;
+@@ -736,12 +757,14 @@
+     // Persist only after dispatching the click. SQLite must not sit in front of the driver's Accept.
+     String id = store.attempt(r.offer, r, true);
+     if (clicked) {
++      autoAcceptStatus = "Pulsación enviada a Cabify";
+       attemptedKeys.put(r.offer.key, now);
+       if (id != null) store.confirmAccepted(id);
+       CocoStore.Trip accepted = id == null ? null : store.find(id);
+       boolean queued = accepted != null && "SIGUIENTE".equals(accepted.status);
+       diagnostic = queued ? "Siguiente viaje aceptado automáticamente" : "Viaje confirmado · en servicio";
+     } else {
++      autoAcceptStatus = "No se pudo pulsar Aceptar";
+       if (id != null) store.status(id, "SIN BOTÓN ACCESIBLE");
+       diagnostic = "Acepta manualmente: botón no accesible";
+     }
+@@ -939,6 +962,10 @@
+                         result, cards.indexOf(result.offer) + 1, cards.size(), demand, true);
+                   }
+                   diagnostic = "OCR verificado: " + cards.size() + " ofertas";
++                  // OCR often arrives after the last Accessibility event. Inspect the current
++                  // Cabify tree now so a short-lived offer can still be accepted automatically.
++                  if (settings.autoAccept && result != null && result.accept)
++                    handler.post(() -> { if (!destroyed) safeInspect(null); });
+                 }
+               }
+             } finally {
+--- a/app/src/main/java/com/cocotaxi/app/MainActivity.java
++++ b/app/src/main/java/com/cocotaxi/app/MainActivity.java
+@@ -709,6 +709,9 @@
+         GREEN);
+     metric(sr, "OBJETIVO", Money.format(v.realGoalHour) + "/h", WHITE);
+     status.addView(sr);
++    TextView automationState = text("", compactUi ? 10 : 12, MUTED);
++    automationState.setMaxLines(2);
++    status.addView(automationState);
+     LinearLayout main = card(body, "OBJETIVO ACTUAL", LineIconView.CHART);
+     LinearLayout r = row();
+     LinearLayout left = col();
+@@ -760,6 +763,8 @@
+     body.addView(promoButton);
+     refreshers.add(
+         () -> {
++          automationState.setText("Autoaceptar " + (v.autoAccept ? "activo" : "apagado")
++              + " · " + CocotaxiAccessibilityService.autoAcceptStatus);
+           CocoStore.Session live = dashboardSession();
+           double liveAppMoney = live.money;
+           double liveCurrentHourly = live.hourly();
+--- a/app/src/test/java/com/cocotaxi/app/OverlayTest.java
++++ b/app/src/test/java/com/cocotaxi/app/OverlayTest.java
+@@ -101,6 +101,10 @@
+     df.setAccessible(true);
+     android.widget.TextView label = (android.widget.TextView) df.get(service);
+     assertEquals("ACEPTABLE", label.getText().toString());
++    java.lang.reflect.Field rf = CocotaxiOverlayService.class.getDeclaredField("reason");
++    rf.setAccessible(true);
++    assertEquals(View.GONE, ((View) rf.get(service)).getVisibility());
++    assertEquals("", ((android.widget.TextView) rf.get(service)).getText().toString());
+     java.lang.reflect.Field sf = CocotaxiOverlayService.class.getDeclaredField("summary");
+     sf.setAccessible(true);
+     assertTrue(
+@@ -132,8 +136,6 @@
+         3,
+         false);
+     assertEquals("RECHAZA", label.getText().toString());
+-    java.lang.reflect.Field rf = CocotaxiOverlayService.class.getDeclaredField("reason");
+-    rf.setAccessible(true);
+     assertEquals(View.GONE, ((View) rf.get(service)).getVisibility());
+     assertEquals("", ((android.widget.TextView) rf.get(service)).getText().toString());
+     java.lang.reflect.Field cf = CocotaxiOverlayService.class.getDeclaredField("close");
