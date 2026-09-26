@@ -1,0 +1,406 @@
+diff --git a/app/build.gradle b/app/build.gradle
+index c0a4578..b216a24 100644
+--- a/app/build.gradle
++++ b/app/build.gradle
+@@ -10,8 +10,8 @@ android {
+         applicationId 'com.cocotaxi.app'
+         minSdk 26
+         targetSdk 36
+-        versionCode 59
+-        versionName '3.1.9'
++        versionCode 60
++        versionName '3.1.10'
+     }
+ 
+     compileOptions {
+diff --git a/app/src/main/java/com/cocotaxi/app/CocoStore.java b/app/src/main/java/com/cocotaxi/app/CocoStore.java
+index a5e4cf5..01154de 100644
+--- a/app/src/main/java/com/cocotaxi/app/CocoStore.java
++++ b/app/src/main/java/com/cocotaxi/app/CocoStore.java
+@@ -643,6 +643,26 @@ public final class CocoStore extends SQLiteOpenHelper {
+     return 0;
+   }
+ 
++  /** Recorded pickup and passenger time, plus the live segment while assigned. */
++  public double tripDuration(Trip t) {
++    return Math.max(0, t.minutes) + ("ASIGNADO".equals(t.status) ? activeSegmentMinutes(t) : 0);
++  }
++
++  /** Sum of completed trips recorded by Coco on a Montevideo calendar day. */
++  public double dailyTripTotal(String day) {
++    LocalDate date = LocalDate.parse(day);
++    long start = date.atStartOfDay(ZONE).toInstant().toEpochMilli();
++    long end = date.plusDays(1).atStartOfDay(ZONE).toInstant().toEpochMilli();
++    try (Cursor q = getReadableDatabase().rawQuery(
++        "SELECT COALESCE(SUM((COALESCE(actual,estimate)-COALESCE(cost,0))/100.0),0)"
++            + " FROM trips WHERE deleted=0 AND trip=1 AND status='FINALIZADO'"
++            + " AND (CASE WHEN completed_at>0 THEN completed_at ELSE at END)>=?"
++            + " AND (CASE WHEN completed_at>0 THEN completed_at ELSE at END)<?",
++        new String[] {Long.toString(start), Long.toString(end)})) {
++      return q.moveToFirst() ? q.getDouble(0) : 0;
++    }
++  }
++
+   /** Freeze an active ride at the last persisted checkpoint until Cabify is inspected. */
+   public synchronized boolean beginRecovery() {
+     SQLiteDatabase db = getWritableDatabase();
+diff --git a/app/src/main/java/com/cocotaxi/app/MainActivity.java b/app/src/main/java/com/cocotaxi/app/MainActivity.java
+index b5270f8..b061f74 100644
+--- a/app/src/main/java/com/cocotaxi/app/MainActivity.java
++++ b/app/src/main/java/com/cocotaxi/app/MainActivity.java
+@@ -11,6 +11,8 @@ import android.net.Uri;
+ import android.os.*;
+ import android.provider.Settings;
+ import android.text.InputType;
++import android.text.Editable;
++import android.text.TextWatcher;
+ import android.view.*;
+ import android.widget.*;
+ import java.time.*;
+@@ -205,6 +207,8 @@ public final class MainActivity extends Activity {
+   private TextView button(String s, Runnable action) {
+     TextView t = bold(s, compactUi ? 12.2f : 13.5f, WHITE);
+     t.setGravity(Gravity.CENTER);
++    t.setSingleLine(true);
++    t.setAutoSizeTextTypeUniformWithConfiguration(10, compactUi ? 12 : 13, 1, android.util.TypedValue.COMPLEX_UNIT_SP);
+     t.setMinHeight(dp(compactUi ? 38 : 44));
+     t.setPadding(dp(compactUi ? 8 : 11), dp(compactUi ? 5 : 8), dp(compactUi ? 8 : 11), dp(compactUi ? 5 : 8));
+     t.setBackground(new InsetDrawable(background(PANEL_2, BORDER), dp(4), 0, dp(4), 0));
+@@ -405,7 +409,7 @@ public final class MainActivity extends Activity {
+   private void showPinGate() {
+     refreshers.clear();
+     handler.removeCallbacks(tick);
+-    compactUi = getResources().getConfiguration().screenHeightDp < 780;
++    compactUi = useCompactUi();
+     LinearLayout root = col();
+     root.setBackgroundColor(BG);
+     root.setPadding(dp(22), 0, dp(22), 0);
+@@ -505,7 +509,6 @@ public final class MainActivity extends Activity {
+ 
+   private void createPinDialog() {
+     LinearLayout c = form();
+-    c.addView(text("El PIN se pedirá al abrir COCOTAXI. No se guarda en texto visible.", 12, MUTED));
+     gap(c, 8);
+     EditText first = pinField(c, "Nuevo PIN (4–6 números)");
+     gap(c, 7);
+@@ -549,7 +552,6 @@ public final class MainActivity extends Activity {
+ 
+   private void disablePinDialog() {
+     LinearLayout c = form();
+-    c.addView(text("Confirma tu PIN actual para quitar el bloqueo de inicio.", 12, MUTED));
+     gap(c, 8);
+     EditText current = pinField(c, "PIN actual");
+     dialog(
+@@ -568,7 +570,7 @@ public final class MainActivity extends Activity {
+   private void render() {
+     refreshers.clear();
+     inputs.clear();
+-    compactUi = getResources().getConfiguration().screenHeightDp < 780;
++    compactUi = useCompactUi();
+     LinearLayout root = col();
+     root.setBackgroundColor(BG);
+     root.setPadding(dp(10), 0, dp(10), 0);
+@@ -663,6 +665,11 @@ public final class MainActivity extends Activity {
+     root.requestApplyInsets();
+   }
+ 
++  private boolean useCompactUi() {
++    android.content.res.Configuration config = getResources().getConfiguration();
++    return config.screenHeightDp < 900 || config.screenWidthDp < 390 || config.fontScale > 1.05f;
++  }
++
+   private void home() {
+     SettingsStore.Values v = SettingsStore.load(this);
+     CocoStore.Session s = dashboardSession();
+@@ -848,11 +855,6 @@ public final class MainActivity extends Activity {
+     CocoStore.Session current = store.session();
+     String id = selectedSession.isEmpty() ? current.id : selectedSession;
+     LinearLayout head = card(body, "SESIÓN Y VIAJES", LineIconView.CLOCK);
+-    head.addView(
+-        text(
+-            "Coco confirma el viaje al aceptarlo. Puedes quitar esa confirmación desde Gestionar.",
+-            compactUi ? 10.5f : 12,
+-            MUTED));
+     LinearLayout topActions = row();
+     topActions.addView(
+         button(
+@@ -879,7 +881,7 @@ public final class MainActivity extends Activity {
+         new LinearLayout.LayoutParams(0, -2, .8f));
+     gapHorizontal(topActions, 6);
+     topActions.addView(
+-        button("＋ Registrar viaje manual", this::manualIncome),
++        button("＋ Viaje manual", this::manualIncome),
+         new LinearLayout.LayoutParams(0, -2, 1.2f));
+     head.addView(topActions);
+ 
+@@ -915,26 +917,18 @@ public final class MainActivity extends Activity {
+         t.deleted ? "ELIMINADO" : state,
+         Money.exact(t.net()),
+         t.deleted ? MUTED : ("SIN CONFIRMAR".equals(t.status) ? RED : GREEN));
+-    tripCard.addView(
+-        text(
+-            t.manual
+-                ? (t.trip ? "Importe " + Money.exact(t.net()) + " · Tiempo " + duration(t.minutes)
+-                    : "Importe " + Money.exact(t.net()))
+-                : (t.confirmed ? "Pago real" : "Pago estimado")
+-                    + " · oferta " + Money.exact(t.offered)
+-                    + (t.minutes > 0 ? " · servicio " + duration(t.minutes) : "")
+-                    + "\n" + t.label,
+-            compactUi ? 10.5f : 12,
+-            MUTED));
++    TextView tripDetail = text("", compactUi ? 10.5f : 12, MUTED);
++    Runnable updateTripDetail = () -> tripDetail.setText(
++        "Importe " + Money.exact(t.net())
++            + (t.trip ? " · Duración " + duration(store.tripDuration(t)) : ""));
++    updateTripDetail.run();
++    if ("ASIGNADO".equals(t.status)) refreshers.add(updateTripDetail);
++    tripCard.addView(tripDetail);
+     tripCard.addView(button("Gestionar viaje  ›", () -> tripActions(t)));
+   }
+ 
+   private void advisor() {
+     LinearLayout intro = card(body, "DÓNDE IR", LineIconView.ROAD);
+-    intro.addView(text("Señales observadas de Cabify en Montevideo. Sin GPS ni posición actual.",
+-        compactUi ? 11 : 13, WHITE));
+-    intro.addView(text("El $/h es la mediana de ofertas vistas en este día y horario; todavía no incluye "
+-        + "espera hasta el próximo viaje ni traslado hacia la zona.", compactUi ? 10 : 12, MUTED));
+     List<CocoDataStore.Forecast> forecasts = CocoDataStore.forecasts(this,
+         System.currentTimeMillis());
+     if (forecasts.isEmpty()) {
+@@ -1099,14 +1093,6 @@ public final class MainActivity extends Activity {
+     trip.setTextColor(WHITE);
+     trip.setChecked(true);
+     c.addView(trip);
+-    c.addView(
+-        text(
+-            "El viaje manual queda finalizado de inmediato. En una sesión activa o pausada"
+-                + " reclasifica tiempo ya conectado; si falta cobertura, Conectado sube sólo lo"
+-                + " necesario. En una sesión cerrada suma todo el tiempo a esa sesión. Nunca"
+-                + " inicia un contador vivo. Un extra suma dinero sin minutos.",
+-            12,
+-            MUTED));
+     final String sessionId = targetSession;
+     dialog(
+         "Registrar ingreso",
+@@ -1137,17 +1123,6 @@ public final class MainActivity extends Activity {
+     EditText manualMinutes = manualEntry && t.trip
+         ? field(c, "Minutos de recogida y servicio", decimal(t.minutes))
+         : null;
+-    c.addView(
+-        text(
+-            manualEntry
+-                ? (t.trip
+-                    ? "Al guardar, el viaje manual sigue finalizado. Cualquier cambio de minutos"
+-                        + " ajusta de inmediato En servicio y Conectado; nunca inicia un contador vivo."
+-                    : "Este registro es un extra/bono: suma dinero, no En servicio ni Conectado.")
+-                : "Confirmar marca el viaje como finalizado. Si Coco capturó la oferta original,"
+-                    + " la comparación con el pago se valida automáticamente.",
+-            12,
+-            MUTED));
+     dialog(
+         "Confirmar / corregir viaje",
+         c,
+@@ -1178,7 +1153,6 @@ public final class MainActivity extends Activity {
+     line(day,"Acumulado",Money.exact(session.money),WHITE);
+     line(day,"Falta",Money.format(Math.max(0,v.dailyGoal-session.money)),RED);
+     progress(day,session.money/v.dailyGoal);
+-    day.addView(text("La jornada continúa al cruzar medianoche. Incluye la espera entre viajes.",12,MUTED));
+     LinearLayout weekly=card(body,"SEMANA · LUNES A DOMINGO",LineIconView.CALENDAR);
+     line(weekly,"Objetivo",Money.format(v.weeklyGoal),GREEN);
+     line(weekly,"Acumulado",Money.exact(week.money),WHITE);
+@@ -1189,11 +1163,6 @@ public final class MainActivity extends Activity {
+   private void promotion() {
+     List<PromotionStore.Snapshot> promos = PromotionStore.getAll(this);
+     LinearLayout c = form();
+-    c.addView(
+-        text(
+-            "Puedes tener varias promociones al mismo tiempo. Cada una conserva su propio premio, cantidad de viajes, inicio y fin.",
+-            12,
+-            MUTED));
+     gap(c, 8);
+     final AlertDialog[] manager = {null};
+     if (promos.isEmpty()) {
+@@ -1304,13 +1273,6 @@ public final class MainActivity extends Activity {
+           new LinearLayout.LayoutParams(0, -2, 1));
+     }
+     c.addView(presets);
+-    c.addView(
+-        text(
+-            editing && old.samples >= 3
+-                ? "Ritmo observado: " + decimal(old.cycle) + " min por viaje, incluyendo esperas"
+-                : "Cada promoción se calcula de forma independiente; el premio nunca se suma antes de cobrarlo.",
+-            12,
+-            MUTED));
+     dialog(
+         editing ? "Editar promoción" : "Nueva promoción",
+         c,
+@@ -1340,7 +1302,6 @@ public final class MainActivity extends Activity {
+     SettingsStore.normalizeGoals(draft);
+ 
+     LinearLayout goals = card(body, "OBJETIVO · ELIGE 1 PARÁMETRO", LineIconView.TARGET);
+-    goals.addView(text("Toca Semanal, Jornada o Por hora. Solo editas uno; Coco recalcula automáticamente los otros dos.", compactUi ? 10 : 11.5f, MUTED));
+     LinearLayout goalRow = row();
+     String[] labels = {"Semanal", "Jornada", "Por hora"};
+     double[] values = {draft.weeklyGoal, draft.dailyGoal, draft.realGoalHour};
+@@ -1364,14 +1325,23 @@ public final class MainActivity extends Activity {
+     goals.addView(goalRow);
+ 
+     LinearLayout schedule = card(body, "JORNADA", LineIconView.CALENDAR);
+-    schedule.addView(
+-        settingTile(
+-            LineIconView.CALENDAR,
+-            "Días de trabajo",
+-            workDaysSummary(draft.workDaysMask) + " · hoy " + decimal(SettingsStore.currentTargetHours(draft)) + " h",
+-            false,
+-            this::editSchedule),
+-        new LinearLayout.LayoutParams(-1, dp(compactUi ? 64 : 76)));
++    LinearLayout workDays = col();
++    workDays.setGravity(Gravity.CENTER);
++    workDays.setPadding(dp(6), dp(5), dp(6), dp(5));
++    workDays.setBackground(background(PANEL_2, BORDER));
++    TextView daysLabel = text("Días de trabajo", compactUi ? 9.5f : 11, MUTED);
++    daysLabel.setGravity(Gravity.CENTER);
++    workDays.addView(daysLabel);
++    TextView daysValue = bold(workDaysSummary(draft.workDaysMask)
++        + " · hoy " + decimal(SettingsStore.currentTargetHours(draft)) + " h",
++        compactUi ? 12 : 16, WHITE);
++    daysValue.setGravity(Gravity.CENTER);
++    daysValue.setSingleLine(true);
++    daysValue.setAutoSizeTextTypeUniformWithConfiguration(10, compactUi ? 12 : 16, 1,
++        android.util.TypedValue.COMPLEX_UNIT_SP);
++    workDays.addView(daysValue, new LinearLayout.LayoutParams(-1, -2));
++    workDays.setOnClickListener(v -> editSchedule());
++    schedule.addView(workDays, new LinearLayout.LayoutParams(-1, -2));
+ 
+     LinearLayout automation = card(body, "AUTOMATIZACIÓN", LineIconView.GEAR);
+     LinearLayout autoRow = row();
+@@ -1535,13 +1505,6 @@ public final class MainActivity extends Activity {
+     TextView codeView = bold(code, compactUi ? 19 : 22, YELLOW);
+     codeView.setGravity(Gravity.CENTER);
+     c.addView(codeView);
+-    TextView note =
+-        text(
+-            "Este código identifica la activación de este dispositivo.",
+-            compactUi ? 10.5f : 11.5f,
+-            MUTED);
+-    note.setGravity(Gravity.CENTER);
+-    c.addView(note);
+ 
+     gap(c, 12);
+     AlertDialog[] holder = new AlertDialog[1];
+@@ -1586,7 +1549,6 @@ public final class MainActivity extends Activity {
+     LinearLayout c=form();
+     EditText amount=field(c,mode==0?"Meta semanal":mode==1?"Meta por jornada":"Meta por hora",
+         decimal(mode==0?draft.weeklyGoal:mode==1?draft.dailyGoal:draft.realGoalHour));
+-    c.addView(text("Las otras dos metas se calculan automáticamente.",12,MUTED));
+     dialog("Tu meta",c,"Aplicar",()->{
+       double n=number(amount);
+       if(n<=0 || n>1000000) throw new IllegalArgumentException("Importe entre 1 y 1.000.000");
+@@ -1674,7 +1636,7 @@ public final class MainActivity extends Activity {
+     EditText factor=field(c,"Factor manual",decimal(draft.factor));
+     EditText cost=field(c,"Gasto por km (0 para medir cobro)",decimal(draft.costKm));
+     CocoStore.Calibration cal=CocoStore.get(this).dailyCalibration();
+-    c.addView(text("Factor diario: "+decimal(cal.factor)+(cal.provisional?" · provisional, precisión no validada":" · "+cal.count+" cierres")+". Usa el mismo período del historial y excluye propinas y premios.",12,MUTED));
++    c.addView(text("Factor diario: "+decimal(cal.factor)+(cal.provisional?" · provisional":" · "+cal.count+" cierres"),12,MUTED));
+     dialog("Cobro estimado",c,"Aplicar",()->{
+       double f=number(factor),k=number(cost);if(f<.1||f>2||k>100)throw new IllegalArgumentException("Factor 0,1–2; gasto 0–100");
+       draft.payoutMode=mode[0];draft.factor=f;draft.costKm=k;
+@@ -1684,7 +1646,6 @@ public final class MainActivity extends Activity {
+   private void editTimes() {
+     LinearLayout c=form();
+     EditText wait=field(c,"Espera al pasajero (min)",decimal(draft.waitPassenger));
+-    c.addView(text("La espera real cuenta en tu sesión. No se añade una espera futura a las ofertas.",12,MUTED));
+     EditText pickup=field(c,"Máxima recogida (min; 0 sin límite)",decimal(draft.maxPickupMin));
+     EditText km=field(c,"Máxima recogida (km; 0 sin límite)",decimal(draft.maxPickupKm));
+     dialog("Tiempos y recogida",c,"Aplicar",()->{
+@@ -1700,7 +1661,6 @@ public final class MainActivity extends Activity {
+     final boolean[] flags={draft.mapDemand};
+     spinner(c,"Demanda",new String[]{"Automática","Alta","Media","Baja"},demand[0],n->demand[0]=n);
+     toggle(c,"Leer demanda del mapa","map",flags[0],on->flags[0]=on);
+-    c.addView(text("La ventana flotante permanece activa durante la sesión. En listas solo recomienda el mejor visible.",12,MUTED));
+     c.addView(button("Autorizar captura de respaldo",()->startActivityForResult(getSystemService(MediaProjectionManager.class).createScreenCaptureIntent(),92)));
+     dialog("Demanda",c,"Aplicar",()->{
+       draft.demandMode=demand[0];draft.mapDemand=flags[0];draft.floatingEnabled=true;
+@@ -1895,13 +1855,6 @@ public final class MainActivity extends Activity {
+ 
+   private void billing(String raw) {
+     LinearLayout c = form();
+-    c.addView(
+-        text(
+-            "Un registro por fecha; guardar otra vez lo reemplaza. El cierre enseña cuánto del"
+-                + " historial llega a ganancias. No añade ingresos por segunda vez. Stars queda"
+-                + " incluido; propinas y bonos extraordinarios se separan.",
+-            12,
+-            MUTED));
+     EditText date = field(c, "Fecha (AAAA-MM-DD)", LocalDate.now(CocoStore.ZONE).toString());
+     date.setInputType(InputType.TYPE_CLASS_DATETIME | InputType.TYPE_DATETIME_VARIATION_DATE);
+     EditText total = field(c, "Total de ganancias", extract(raw, "total(?: de)? ganancias")),
+@@ -1909,15 +1862,27 @@ public final class MainActivity extends Activity {
+         bonus = field(c, "Bonos extraordinarios", "0"),
+         tolls = field(c, "Peajes reembolsados incluidos", "0"),
+         history = field(c, "Suma del historial del mismo día", "");
++    history.setFocusable(false);
++    history.setOnClickListener(v -> toast("Suma calculada de los viajes finalizados en Coco"));
++    Runnable updateHistory = () -> {
++      try {
++        history.setText(decimal(CocoStore.get(this)
++            .dailyTripTotal(date.getText().toString().trim())));
++      } catch (RuntimeException ignored) {
++        history.setText("");
++      }
++    };
++    date.addTextChangedListener(new TextWatcher() {
++      @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
++      @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
++        updateHistory.run();
++      }
++      @Override public void afterTextChanged(Editable s) {}
++    });
++    updateHistory.run();
+     Switch eligible = new Switch(this);
+     eligible.setText("Día cerrado, historial completo y mismo importe que las ofertas");
+     c.addView(eligible);
+-    c.addView(
+-        text(
+-            "Actívalo solo si coinciden día, conductor y todos los viajes. Los registros parciales"
+-                + " se guardan sin entrenar. No sumes Stars otra vez.",
+-            12,
+-            MUTED));
+     if (raw != null) {
+       c.addView(text("OCR para revisión:\n" + raw, 11, MUTED));
+       String tip = extract(raw, "propinas?");
+@@ -1932,7 +1897,7 @@ public final class MainActivity extends Activity {
+               tip = number(tips),
+               bon = number(bonus),
+               toll = number(tolls),
+-              hist = number(history);
++              hist = CocoStore.get(this).dailyTripTotal(date.getText().toString().trim());
+           CocoStore.get(this)
+               .saveBilling(
+                   date.getText().toString(), all, tip, bon, toll, hist, eligible.isChecked());
+diff --git a/app/src/test/java/com/cocotaxi/app/StoreTest.java b/app/src/test/java/com/cocotaxi/app/StoreTest.java
+index ee7b4d1..c5ae490 100644
+--- a/app/src/test/java/com/cocotaxi/app/StoreTest.java
++++ b/app/src/test/java/com/cocotaxi/app/StoreTest.java
+@@ -78,6 +78,21 @@ public class StoreTest {
+     assertEquals(200, st.session().money, .001);
+   }
+ 
++  @Test
++  public void dailyHistoryUsesCompletedTripsAndPreservesCents() {
++    String day = java.time.LocalDate.now(CocoStore.ZONE).toString();
++    String first = st.manual(398.97, 10, "primero");
++    st.manual(226.87, 8, "segundo");
++    st.manual(50, 0, "bono", false);
++    assertEquals(625.84, st.dailyTripTotal(day), .001);
++    st.delete(first);
++    assertEquals(226.87, st.dailyTripTotal(day), .001);
++    st.restore(first);
++    assertEquals(625.84, st.dailyTripTotal(day), .001);
++    assertEquals(0, st.dailyTripTotal(java.time.LocalDate.now(CocoStore.ZONE)
++        .minusDays(5).toString()), .001);
++  }
++
+   @Test
+   public void separateSessions() {
+     st.manual(200, 10, "a");
