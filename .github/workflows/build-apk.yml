@@ -1,4 +1,4 @@
-name: Build COCOTAXI 3.1.11 expanded layout and trip export
+name: Build COCOTAXI 3.1.12 manual acceptance
 
 on:
   workflow_dispatch:
@@ -36,6 +36,7 @@ on:
       - 'cocotaxi-3.1.9-fast-accept-final-payment.patch'
       - 'cocotaxi-3.1.10-session-billing-layout.patch'
       - 'cocotaxi-3.1.11-layout-trip-export.patch'
+      - 'cocotaxi-3.1.12-manual-accept.patch'
       - '.github/workflows/build-apk.yml'
 
 jobs:
@@ -218,6 +219,11 @@ jobs:
         run: |
           patch --batch -p1 -d "$PROJECT_DIR" < cocotaxi-3.1.11-layout-trip-export.patch
 
+      - name: Apply COCOTAXI 3.1.12 manual acceptance
+        shell: bash
+        run: |
+          patch --batch -p1 -d "$PROJECT_DIR" < cocotaxi-3.1.12-manual-accept.patch
+
       - name: Set up Java 17
         uses: actions/setup-java@v5
         with:
@@ -227,8 +233,8 @@ jobs:
       - name: Verify final version and public license surface
         shell: bash
         run: |
-          grep -R "versionName '3.1.11'" "$PROJECT_DIR/app/build.gradle"
-          grep -R "versionCode 61" "$PROJECT_DIR/app/build.gradle"
+          grep -R "versionName '3.1.12'" "$PROJECT_DIR/app/build.gradle"
+          grep -R "versionCode 62" "$PROJECT_DIR/app/build.gradle"
           grep -R "cocotaxi-license-api.cocotaxi-licenses-alecandido998.workers.dev" "$PROJECT_DIR/app/src/main/java/com/cocotaxi/app/LicenseApiClient.java"
           ! grep -RE "/admin|ADMIN_PANEL_PASSWORD|X-Admin|adminToken" "$PROJECT_DIR/app/src/main/java/com/cocotaxi/app/LicenseApiClient.java"
           ! grep -RE "ACCESS_FINE_LOCATION|ACCESS_COARSE_LOCATION|ACCESS_BACKGROUND_LOCATION" "$PROJECT_DIR/app/src/main/AndroidManifest.xml"
@@ -277,18 +283,18 @@ jobs:
         shell: bash
         run: |
           cd "$(dirname "$PROJECT_DIR")"
-          zip -qr COCOTAXI_3.1.11_fuentes.zip "$(basename "$PROJECT_DIR")"
+          zip -qr COCOTAXI_3.1.12_fuentes.zip "$(basename "$PROJECT_DIR")"
 
-      - name: Upload COCOTAXI 3.1.11 APK
+      - name: Upload COCOTAXI 3.1.12 APK
         uses: actions/upload-artifact@v4
         with:
-          name: COCOTAXI-3.1.11-expanded-debug-apk
+          name: COCOTAXI-3.1.12-manual-debug-apk
           path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
 
-      - name: Upload COCOTAXI 3.1.11 source
+      - name: Upload COCOTAXI 3.1.12 source
         uses: actions/upload-artifact@v4
         with:
-          name: COCOTAXI-3.1.11-expanded-source
-          path: build-2.6.6/COCOTAXI_3.1.11_fuentes.zip
+          name: COCOTAXI-3.1.12-manual-source
+          path: build-2.6.6/COCOTAXI_3.1.12_fuentes.zip
           if-no-files-found: error
