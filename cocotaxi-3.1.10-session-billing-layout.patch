@@ -404,3 +404,16 @@ index ee7b4d1..c5ae490 100644
    @Test
    public void separateSessions() {
      st.manual(200, 10, "a");
+diff --git a/app/src/test/java/com/cocotaxi/app/UiTest.java b/app/src/test/java/com/cocotaxi/app/UiTest.java
+index 22dfeb5..55564c1 100644
+--- a/app/src/test/java/com/cocotaxi/app/UiTest.java
++++ b/app/src/test/java/com/cocotaxi/app/UiTest.java
+@@ -146,7 +146,7 @@ public class UiTest {
+       assertNull(find(a.getWindow().getDecorView(), "COMPROBAR COBROS"));
+       snapshot(a, "metas");
+       click(a, "Sesión");
+-      assertNotNull(find(a.getWindow().getDecorView(), "＋ Registrar viaje manual"));
++      assertNotNull(find(a.getWindow().getDecorView(), "＋ Viaje manual"));
+       snapshot(a, "sesion");
+       click(a, "Ajustes");
+       assertNotNull(find(a.getWindow().getDecorView(), "Guardar ajustes"));
