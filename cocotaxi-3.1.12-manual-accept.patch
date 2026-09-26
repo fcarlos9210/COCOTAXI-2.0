@@ -1,0 +1,251 @@
+diff --git a/app/build.gradle b/app/build.gradle
+index 1b42817..cb0578f 100644
+--- a/app/build.gradle
++++ b/app/build.gradle
+@@ -10,8 +10,8 @@ android {
+         applicationId 'com.cocotaxi.app'
+         minSdk 26
+         targetSdk 36
+-        versionCode 61
+-        versionName '3.1.11'
++        versionCode 62
++        versionName '3.1.12'
+     }
+ 
+     compileOptions {
+diff --git a/app/src/main/java/com/cocotaxi/app/CocoStore.java b/app/src/main/java/com/cocotaxi/app/CocoStore.java
+index 752d43e..22944dc 100644
+--- a/app/src/main/java/com/cocotaxi/app/CocoStore.java
++++ b/app/src/main/java/com/cocotaxi/app/CocoStore.java
+@@ -479,6 +479,37 @@ public final class CocoStore extends SQLiteOpenHelper {
+     return changed;
+   }
+ 
++  /** A driver's Cabify acceptance is recorded regardless of Coco's recommendation. */
++  public synchronized String recordManualAcceptance(Offer offer, DecisionEngine.Result result) {
++    Session s = session();
++    if (!s.active || s.paused) return null;
++    Trip current = activeTrip();
++    Trip queued = nextTrip();
++    if (offer != null && offer.hasEnoughForDecision()) {
++      for (Trip existing : new Trip[] {current, queued}) {
++        if (existing != null && offer.key.equals(existing.key)) {
++          if ("INTENTO".equals(existing.status) || "INTENTO_SIGUIENTE".equals(existing.status))
++            confirmAccepted(existing.id);
++          return existing.id;
++        }
++      }
++      String id = attempt(offer, result, false);
++      if (id != null) confirmAccepted(id);
++      return id;
++    }
++    // A real Cabify Accept click can arrive after the fare has vanished from Accessibility.
++    // Confirm a pending attempt or start an amount-pending ride; the final payment can fill it.
++    if (current != null && "INTENTO".equals(current.status)) {
++      confirmAccepted(current.id);
++      return current.id;
++    }
++    if (queued != null && "INTENTO_SIGUIENTE".equals(queued.status)) {
++      confirmAccepted(queued.id);
++      return queued.id;
++    }
++    return current == null ? observedAssignment(null, null, false) : null;
++  }
++
+   /**
+    * Records an assignment visible on Cabify's pickup screen even if the driver tapped Accept
+    * manually and the offer card disappeared before Coco captured its amount. A recent known offer
+@@ -490,6 +521,10 @@ public final class CocoStore extends SQLiteOpenHelper {
+     Session s = session();
+     if (!s.active || s.paused) return null;
+     Trip active = activeTrip();
++    if (active != null && "INTENTO".equals(active.status)) {
++      confirmAccepted(active.id);
++      return active.id;
++    }
+     if (active != null) return active.id;
+ 
+     String id = UUID.randomUUID().toString();
+diff --git a/app/src/main/java/com/cocotaxi/app/CocotaxiAccessibilityService.java b/app/src/main/java/com/cocotaxi/app/CocotaxiAccessibilityService.java
+index d0465f0..3b5e20c 100644
+--- a/app/src/main/java/com/cocotaxi/app/CocotaxiAccessibilityService.java
++++ b/app/src/main/java/com/cocotaxi/app/CocotaxiAccessibilityService.java
+@@ -77,7 +77,7 @@ public final class CocotaxiAccessibilityService extends AccessibilityService {
+ 
+   private void observeAssignment(
+       String normalized, boolean assigned, CocoStore store, CocoStore.Session session, CocoStore.Trip trip) {
+-    if (assigned && trip == null) {
++    if (assigned && (trip == null || "INTENTO".equals(trip.status))) {
+       long now = SystemClock.elapsedRealtime();
+       Offer candidate = null;
+       if (recentDetail != null && session.id.equals(detailSession) && now - detailAt <= 15000)
+@@ -243,31 +243,27 @@ public final class CocotaxiAccessibilityService extends AccessibilityService {
+     if (!CABIFY.contentEquals(e.getPackageName() == null ? "" : e.getPackageName())
+         || SystemClock.elapsedRealtime() - clickedAt < 1500) return;
+     AccessibilityNodeInfo n = e.getSource();
+-    if (n == null) return;
+     try {
+-      String label =
+-          OfferParser.normalize(
+-                  String.valueOf(n.getText() == null ? n.getContentDescription() : n.getText()))
+-              .trim();
+-      if (!label.startsWith("aceptar")) return;
++      boolean accepted = false;
++      if (e.getText() != null)
++        for (CharSequence label : e.getText())
++          if (isCabifyAcceptLabel(label)) accepted = true;
++      for (AccessibilityNodeInfo node = n, parent; node != null; node = parent) {
++        accepted |= isCabifyAcceptLabel(node.getText())
++            || isCabifyAcceptLabel(node.getContentDescription());
++        parent = node.getParent();
++        if (node != n) node.recycle();
++        if (accepted) {
++          if (parent != null) parent.recycle();
++          break;
++        }
++      }
++      if (!accepted) return;
++
++      Offer candidate = null;
+       for (int i = 0; i < 8 && n != null; i++) {
+         Offer o = OfferParser.parse(TextCollector.collect(n), CABIFY);
+-        annotateOffer(o);
+-        if (o.hasEnoughForDecision()) {
+-          SettingsStore.Values v = SettingsStore.load(this);
+-          CocoStore store = CocoStore.get(this);
+-          DecisionEngine.Result r =
+-              DecisionEngine.evaluate(
+-                  o, v, store.session(), demand(v), store.calibrationForOffer(o.kind, v), PromotionStore.get(this));
+-          String id = store.attempt(o, r, false);
+-          if (id != null) {
+-            store.confirmAccepted(id);
+-            CocoStore.Trip accepted = store.find(id);
+-            boolean queued = accepted != null && "SIGUIENTE".equals(accepted.status);
+-            diagnostic = queued ? "Siguiente viaje confirmado" : "Viaje confirmado · en servicio";
+-          }
+-          return;
+-        }
++        if (o.hasEnoughForDecision()) { candidate = o; break; }
+         AccessibilityNodeInfo parent = n.getParent();
+         n.recycle();
+         n = parent;
+@@ -276,45 +272,50 @@ public final class CocotaxiAccessibilityService extends AccessibilityService {
+       // Very fast Cabify transitions may remove the fare from Accessibility before the click
+       // event reaches us. Reuse only a recent unambiguous single offer, never a list.
+       long now = SystemClock.elapsedRealtime();
+-      Offer candidate = null;
+       CocoStore.Session session = CocoStore.get(this).session();
+-      if (recentDetail != null && session.id.equals(detailSession) && now - detailAt <= 30000)
++      if (candidate == null && recentDetail != null && session.id.equals(detailSession)
++          && now - detailAt <= 30000)
+         candidate = recentDetail;
+-      else if (recentOcrOffer != null && session.id.equals(lastOfferSession) && now - recentOcrAt <= 15000)
++      else if (candidate == null && recentOcrOffer != null && session.id.equals(lastOfferSession)
++          && now - recentOcrAt <= 15000)
+         candidate = recentOcrOffer;
+-      else if (lastUnambiguousOffer != null
++      else if (candidate == null && lastUnambiguousOffer != null
+           && session.id.equals(lastOfferSession)
+           && now - lastUnambiguousAt <= 15000) candidate = lastUnambiguousOffer;
+-      else if (previous.size() == 1 && now - previousAt <= 15000) candidate = previous.get(0);
++      else if (candidate == null && previous.size() == 1 && now - previousAt <= 15000)
++        candidate = previous.get(0);
+       if (candidate != null && recentOcrOffer != null
+           && session.id.equals(lastOfferSession) && now - recentOcrAt <= 15000
+           && OfferParser.sameOffer(candidate, recentOcrOffer))
+         candidate = OfferParser.merge(candidate, recentOcrOffer);
++      DecisionEngine.Result r = null;
+       if (candidate != null && candidate.hasEnoughForDecision()) {
+         annotateOffer(candidate);
+         SettingsStore.Values v = SettingsStore.load(this);
+         CocoStore store = CocoStore.get(this);
+-        DecisionEngine.Result r =
+-            DecisionEngine.evaluate(
+-                candidate,
+-                v,
+-                session,
+-                demand(v),
+-                store.calibrationForOffer(candidate.kind, v),
+-                PromotionStore.get(this));
+-        String id = store.attempt(candidate, r, false);
+-        if (id != null) {
+-          store.confirmAccepted(id);
+-          CocoStore.Trip accepted = store.find(id);
+-          boolean queued = accepted != null && "SIGUIENTE".equals(accepted.status);
+-          diagnostic = queued ? "Siguiente viaje confirmado" : "Viaje confirmado · en servicio";
+-        }
++        r = DecisionEngine.evaluate(candidate, v, session, demand(v),
++            store.calibrationForOffer(candidate.kind, v), PromotionStore.get(this));
++      }
++      String id = CocoStore.get(this).recordManualAcceptance(candidate, r);
++      if (id != null) {
++        CocoStore.Trip recorded = CocoStore.get(this).find(id);
++        diagnostic = recorded != null && "SIGUIENTE".equals(recorded.status)
++            ? "Siguiente viaje confirmado"
++            : "Viaje aceptado manualmente · en servicio";
++        cachedSessionAt = cachedTripAt = 0L;
+       }
+     } finally {
+       if (n != null) n.recycle();
+     }
+   }
+ 
++  static boolean isCabifyAcceptLabel(CharSequence label) {
++    if (label == null) return false;
++    String normalized = OfferParser.normalize(label.toString()).trim();
++    return normalized.equals("aceptar") || normalized.startsWith("aceptar viaje")
++        || normalized.startsWith("aceptar carrera") || normalized.startsWith("aceptar oferta");
++  }
++
+   private boolean observeTripTerminal(
+       String normalized, boolean assigned, CocoStore store, CocoStore.Session session, CocoStore.Trip trip) {
+     if (trip == null || !"ASIGNADO".equals(trip.status)) {
+diff --git a/app/src/test/java/com/cocotaxi/app/StoreTest.java b/app/src/test/java/com/cocotaxi/app/StoreTest.java
+index 2fd7f43..a989741 100644
+--- a/app/src/test/java/com/cocotaxi/app/StoreTest.java
++++ b/app/src/test/java/com/cocotaxi/app/StoreTest.java
+@@ -139,6 +139,44 @@ public class StoreTest {
+     return st.attempt(o, r, false);
+   }
+ 
++  @Test
++  public void manuallyAcceptedRejectedOfferStartsOneRealTripAndClock() {
++    Offer offer = OfferParser.parse("Para ti $188\n3 min\n9 min\nAceptar", "com.cabify.driver");
++    DecisionEngine.Result rejected = new DecisionEngine.Result();
++    rejected.offer = offer;
++    rejected.accept = false;
++    rejected.payout = 188;
++    rejected.minutes = 12;
++    String id = st.recordManualAcceptance(offer, rejected);
++    assertNotNull(id);
++    assertEquals("ASIGNADO", st.find(id).status);
++    assertEquals(id, st.recordManualAcceptance(offer, rejected));
++    assertEquals(id, st.observedAssignment(offer, rejected, false));
++    ShadowSystemClock.advanceBy(Duration.ofMinutes(2));
++    assertEquals(1, st.session().trips);
++    assertTrue(st.tripDuration(st.find(id)) >= 2);
++    assertEquals(1, st.trips(st.session().id).size());
++  }
++
++  @Test
++  public void pickupScreenConfirmsPendingAttemptWithoutDuplicate() {
++    String id = attempt();
++    assertEquals("INTENTO", st.find(id).status);
++    assertEquals(id, st.observedAssignment(null, null, false));
++    assertEquals("ASIGNADO", st.find(id).status);
++    assertEquals(1, st.trips(st.session().id).size());
++  }
++
++  @Test
++  public void acceptedClickWithMissingOfferKeepsAmountPendingAndRunsClock() {
++    String id = st.recordManualAcceptance(null, null);
++    assertNotNull(id);
++    assertEquals(0, st.find(id).net(), .001);
++    assertEquals("ASIGNADO", st.find(id).status);
++    ShadowSystemClock.advanceBy(Duration.ofMinutes(1));
++    assertTrue(st.tripDuration(st.find(id)) >= 1);
++  }
++
+   @Test
+   public void finalSummaryThenHistoryCorrectsCentsWithoutCreatingAnotherTrip() {
+     String id = st.observedAssignment(null, null, false);
