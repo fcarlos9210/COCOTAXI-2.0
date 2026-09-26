@@ -1,0 +1,19 @@
+name: Package COCOTAXI 3.1.13 sources
+on:
+  push:
+    branches: [build/cocotaxi-3.1.13-core-ui]
+    paths:
+      - .github/workflows/package-source-3.1.13.yml
+  workflow_dispatch:
+jobs:
+  sources:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reassemble exact build sources
+        run: cat coco313/part.* | base64 -d > COCOTAXI_3.1.13_fuentes.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: COCOTAXI-3.1.13-source-original
+          path: COCOTAXI_3.1.13_fuentes.zip
+          if-no-files-found: error
