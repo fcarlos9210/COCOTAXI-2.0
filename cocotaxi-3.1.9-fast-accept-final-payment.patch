@@ -1,0 +1,355 @@
+--- a/app/build.gradle
++++ b/app/build.gradle
+@@ -10,8 +10,8 @@
+         applicationId 'com.cocotaxi.app'
+         minSdk 26
+         targetSdk 36
+-        versionCode 58
+-        versionName '3.1.8'
++        versionCode 59
++        versionName '3.1.9'
+     }
+ 
+     compileOptions {
+--- a/app/src/main/java/com/cocotaxi/app/CocoStore.java
++++ b/app/src/main/java/com/cocotaxi/app/CocoStore.java
+@@ -780,6 +780,44 @@
+     return true;
+   }
+ 
++  /** Reconcile the just completed Cabify ride with its summary or exact history payout. */
++  public synchronized boolean recordFinalPayment(String sessionId, long shownAt,
++      double amount, boolean fromHistory) {
++    if (!Double.isFinite(amount) || amount <= 0 || shownAt <= 0)
++      return false;
++    long tolerance = fromHistory ? 15 * 60000L : 5 * 60000L;
++    String selected = null;
++    long selectedActual = Long.MIN_VALUE;
++    int candidates = 0;
++    String sessionFilter = sessionId == null ? "" : "session=? AND ";
++    String[] args = sessionId == null
++        ? new String[] {"" + shownAt, "" + tolerance}
++        : new String[] {sessionId, "" + shownAt, "" + tolerance};
++    try (Cursor q = getReadableDatabase().rawQuery(
++        "SELECT id,actual FROM trips WHERE " + sessionFilter + "origin='CABIFY' AND deleted=0"
++            + " AND status='FINALIZADO' AND completed_at>0 AND corrected_at=0"
++            + " AND ABS(completed_at-?)<=? ORDER BY completed_at DESC",
++        args)) {
++      while (q.moveToNext()) {
++        if (fromHistory && !q.isNull(1)
++            && (long) Math.floor(q.getLong(1) / 100.0) != (long) Math.floor(amount))
++          continue; // A provisional summary must belong to the same integer fare.
++        selected = q.getString(0);
++        selectedActual = q.isNull(1) ? Long.MIN_VALUE : q.getLong(1);
++        candidates++;
++      }
++    }
++    if (candidates != 1 || (!fromHistory && selectedActual != Long.MIN_VALUE)
++        || selectedActual == Money.cents(amount)) return false;
++    ContentValues values = new ContentValues();
++    values.put("actual", Money.cents(amount));
++    int updated = getWritableDatabase().update("trips", values,
++        "id=? AND status='FINALIZADO' AND corrected_at=0",
++        new String[] {selected});
++    if (updated > 0) touch();
++    return updated > 0;
++  }
++
+   /** Starts an already accepted consecutive ride only after the current ride ends. */
+   private void promoteNext(SQLiteDatabase db, String sessionId) {
+     try (Cursor q =
+--- a/app/src/main/java/com/cocotaxi/app/CocotaxiAccessibilityService.java
++++ b/app/src/main/java/com/cocotaxi/app/CocotaxiAccessibilityService.java
+@@ -95,16 +95,8 @@
+         candidate = OfferParser.merge(candidate, recentOcrOffer);
+ 
+       if (trip == null) {
+-        // Give an already-running OCR frame a short chance to publish the fare before creating a
+-        // zero-value assignment. This removes the common race where Cabify changes to Ir a origen
+-        // a few milliseconds before Coco receives the final offer text.
+-        if (candidate == null) {
+-          if (assignmentWithoutOfferAt == 0L) assignmentWithoutOfferAt = now;
+-          if (now - assignmentWithoutOfferAt < 1500L) {
+-            diagnostic = "Viaje aceptado detectado · confirmando importe";
+-            return;
+-          }
+-        }
++        // The assigned screen is sufficient to start service immediately. A missed offer can
++        // acquire its real amount from Cabify's final summary or exact history later.
+         DecisionEngine.Result r = null;
+         if (candidate != null) {
+           annotateOffer(candidate);
+@@ -160,6 +152,31 @@
+     diagnostic = recovering ? "INICIALIZANDO · recuperando viaje" : "Esperando señal de Cabify";
+   }
+ 
++  public static void inspectCurrent() {
++    CocotaxiAccessibilityService service = instance;
++    if (service != null && !service.destroyed) {
++      service.handler.post(() -> service.safeInspect(null));
++      service.handler.postDelayed(() -> service.safeInspect(null), 350L);
++    }
++  }
++
++  private void reconcilePayment(String normalized, CocoStore store, CocoStore.Session session) {
++    double summary = FinalPayment.summary(normalized);
++    if (Double.isFinite(summary) && session.active
++        && store.recordFinalPayment(session.id, System.currentTimeMillis(), summary, false)) {
++      diagnostic = "Pago final provisional: " + Money.exact(summary);
++      cachedSessionAt = cachedTripAt = 0L;
++    }
++    if (normalized.contains("historial de viajes")) {
++      for (FinalPayment.Entry entry : FinalPayment.history(normalized, System.currentTimeMillis())) {
++        if (store.recordFinalPayment(null, entry.at, entry.amount, true)) {
++          diagnostic = "Pago real del historial: " + Money.exact(entry.amount);
++          cachedSessionAt = cachedTripAt = 0L;
++        }
++      }
++    }
++  }
++
+   @Override
+   public void onAccessibilityEvent(AccessibilityEvent event) {
+     if (event == null) return;
+@@ -487,6 +504,11 @@
+       CocoStore store = CocoStore.get(this);
+       CocoStore.Session session = sessionSnapshot(store, false);
+       if (!session.active) {
++        try (TextCollector.Snapshot snapshot = TextCollector.snapshot(root)) {
++          String normalized = OfferParser.normalize(snapshot.text);
++          if (normalized.contains("historial de viajes"))
++            reconcilePayment(normalized, store, session);
++        }
+         CocotaxiOverlayService.clearOffer();
+         stableKey = "";
+         stableAt = 0L;
+@@ -512,10 +534,12 @@
+         }
+ 
+         if (observeTripTerminal(normalized, assigned, store, session, trip)) {
++          reconcilePayment(normalized, store, session);
+           CocotaxiOverlayService.clearOffer();
+           cachedSessionAt = cachedTripAt = 0L;
+           return;
+         }
++        reconcilePayment(normalized, store, session);
+         if (session.paused) {
+           CocotaxiOverlayService.clearOffer();
+           return;
+@@ -540,7 +564,7 @@
+         if (!list && hasAccept) {
+           Offer direct = OfferParser.parseNormalized(text, normalized, CABIFY);
+           boolean fused = false;
+-          if ((!direct.hasEnoughForDecision() || !direct.fareFractionVisible)
++          if (!direct.hasEnoughForDecision()
+               && recentOcrOffer != null
+               && SystemClock.elapsedRealtime() - recentOcrAt <= 5000
+               && OfferParser.sameOffer(direct, recentOcrOffer)) {
+@@ -559,8 +583,6 @@
+             previous = single;
+             previousAt = SystemClock.elapsedRealtime();
+             handleOffers(root, tree, single, fused, false, true, session, fused);
+-            if (!direct.fareFractionVisible && Build.VERSION.SDK_INT >= 30)
+-              requestScreenshot(root.getWindowId(), true);
+             if ((direct.pickupArea.isEmpty() || direct.destinationArea.isEmpty())
+                 && Build.VERSION.SDK_INT >= 30) requestScreenshot(root.getWindowId());
+             diagnostic = fused ? "Oferta confirmada por Accessibility + OCR" : "Oferta detectada al instante";
+@@ -592,8 +614,6 @@
+           previous = cards;
+           previousAt = SystemClock.elapsedRealtime();
+           handleOffers(root, tree, cards, false, list, hasAccept, session, false);
+-          if (hasAccept && resultNeedsOcr(cards) && Build.VERSION.SDK_INT >= 30)
+-            requestScreenshot(root.getWindowId(), true);
+           diagnostic = "Leyendo " + cards.size() + " ofertas visibles";
+         } else {
+           stableKey = "";
+@@ -663,6 +683,12 @@
+     DecisionEngine.Result result = best(cards, v, session, demand, promo);
+     long decisionEndNs = SystemClock.elapsedRealtimeNanos();
+     if (result == null) return;
++    // Critical ordering: decide -> click Cabify -> persist -> draw overlay. Window rendering must never
++    // delay the Accept action.
++    lastDispatchNs = 0L;
++    int click = maybeClick(root, tree, cards, v, result, list, hasAccept, requireStable,
++        fromOcr);
++    long completedNs = SystemClock.elapsedRealtimeNanos();
+     for (Offer offer : cards) {
+       if (offer != null && offer.hasEnoughForDecision()) {
+         DecisionEngine.Result observation = offer == result.offer ? result
+@@ -670,13 +696,6 @@
+         CocoDataStore.offer(this, session.id, offer, observation, fromOcr);
+       }
+     }
+-
+-    // Critical ordering: decide -> click Cabify -> persist -> draw overlay. Window rendering must never
+-    // delay the Accept action.
+-    lastDispatchNs = 0L;
+-    int click = maybeClick(root, tree, cards, v, result, list, hasAccept, requireStable,
+-        fromOcr);
+-    long completedNs = SystemClock.elapsedRealtimeNanos();
+     if (result.accept && v.autoAccept && click != CLICK_NONE) {
+       long dispatchNs = lastDispatchNs > 0L ? lastDispatchNs : completedNs;
+       android.util.Log.i(
+@@ -702,12 +721,8 @@
+     }
+     if (!v.autoAccept) { autoAcceptStatus = "Desactivado en Ajustes"; return CLICK_NONE; }
+     if (r == null || !r.accept) { autoAcceptStatus = "Oferta fuera del filtro"; return CLICK_NONE; }
+-    // Accessibility often omits the comma and cents. Show the estimate, but never automatically
+-    // accept a rounded amount until a compatible OCR reading confirms the fare.
+-    if (!fromOcr && r.offer != null && !r.offer.fareFractionVisible) {
+-      autoAcceptStatus = "Esperando confirmar importe y centavos por OCR";
+-      return CLICK_NONE;
+-    }
++    // Cabify's offer price is often an integer. Decide on that displayed price; the exact
++    // final payment belongs to the completion/history flow and must not delay Accept.
+     if (!canTargetAccept(cards, tree.acceptCount, list, r.offer)) {
+       stableKey = "";
+       autoAcceptStatus = "No se puede asociar la oferta a un botón único";
+@@ -918,9 +933,11 @@
+                 boolean assigned = AssignmentSignals.isAssignedNormalized(normalized);
+                 CocoStore.Trip trip = tripSnapshot(store, s);
+                 if (observeTripTerminal(normalized, assigned, store, s, trip)) {
++                  reconcilePayment(normalized, store, s);
+                   CocotaxiOverlayService.clearOffer();
+                   return;
+                 }
++                reconcilePayment(normalized, store, s);
+                 observeAssignment(normalized, assigned, store, s, trip);
+                 boolean ocrOfferVisible = OfferParser.isLikelyOfferNormalized(normalized);
+                 if ((assigned && !ocrOfferVisible) || OfferParser.isHistoryNormalized(normalized)) {
+--- /dev/null
++++ b/app/src/main/java/com/cocotaxi/app/FinalPayment.java
+@@ -0,0 +1,54 @@
++package com.cocotaxi.app;
++
++import java.time.Instant;
++import java.time.LocalDate;
++import java.time.LocalTime;
++import java.util.ArrayList;
++import java.util.List;
++import java.util.regex.Matcher;
++import java.util.regex.Pattern;
++
++/** Amounts displayed by Cabify after a ride, never prices from an offer or wallet. */
++public final class FinalPayment {
++  private static final Pattern SUMMARY = Pattern.compile(
++      "(?:\\$|uyu)\\s*([0-9][0-9.]*(?:,[0-9]{2})?)\\s+para ti\\b");
++  private static final Pattern HISTORY = Pattern.compile(
++      "\\b(hoy|ayer),?\\s*([0-2]?[0-9]):([0-5][0-9])\\s+cabify(?:\\s+electrico)?"
++          + "\\s+(?:\\$|uyu)\\s*([0-9][0-9.]*(?:,[0-9]{2}))\\b");
++
++  public static final class Entry {
++    public final long at;
++    public final double amount;
++    Entry(long at, double amount) { this.at = at; this.amount = amount; }
++  }
++
++  private FinalPayment() {}
++
++  public static double summary(String normalized) {
++    if (normalized == null || !normalized.contains("viaje finalizado")
++        || !normalized.contains("ver detalles")) return Double.NaN;
++    Matcher m = SUMMARY.matcher(normalized);
++    if (!m.find()) return Double.NaN;
++    double amount = Money.parse(m.group(1));
++    return m.find() ? Double.NaN : amount;
++  }
++
++  public static List<Entry> history(String normalized, long now) {
++    List<Entry> out = new ArrayList<>();
++    if (normalized == null || !normalized.contains("historial de viajes")) return out;
++    String flattened = normalized.replaceAll("\\s+", " ");
++    LocalDate today = Instant.ofEpochMilli(now).atZone(CocoStore.ZONE).toLocalDate();
++    Matcher m = HISTORY.matcher(flattened);
++    while (m.find()) {
++      int hour = Integer.parseInt(m.group(2));
++      if (hour > 23) continue;
++      LocalDate day = m.group(1).equals("ayer") ? today.minusDays(1) : today;
++      long at = day.atTime(LocalTime.of(hour, Integer.parseInt(m.group(3))))
++          .atZone(CocoStore.ZONE).toInstant().toEpochMilli();
++      double amount = Money.parse(m.group(4));
++      if (Double.isFinite(amount) && amount > 0 && at <= now + 60000L)
++        out.add(new Entry(at, amount));
++    }
++    return out;
++  }
++}
+--- a/app/src/main/java/com/cocotaxi/app/MainActivity.java
++++ b/app/src/main/java/com/cocotaxi/app/MainActivity.java
+@@ -677,6 +677,7 @@
+               if (st.session().paused) st.pause();
+               else st.start();
+               startOverlay();
++              CocotaxiAccessibilityService.inspectCurrent();
+               render();
+             }),
+         new LinearLayout.LayoutParams(0, -2, 1.35f));
+--- a/app/src/test/java/com/cocotaxi/app/StoreTest.java
++++ b/app/src/test/java/com/cocotaxi/app/StoreTest.java
+@@ -105,6 +105,36 @@
+   }
+ 
+   @Test
++  public void finalSummaryThenHistoryCorrectsCentsWithoutCreatingAnotherTrip() {
++    String id = st.observedAssignment(null, null, false);
++    assertNotNull(id);
++    assertEquals(0, st.find(id).offered, .001);
++    st.complete(id);
++    long finishedAt = System.currentTimeMillis();
++    String session = st.session().id;
++    assertTrue(st.recordFinalPayment(session, finishedAt, 226, false));
++    assertEquals(226, st.find(id).actual, .001);
++    assertTrue(st.recordFinalPayment(null, finishedAt, 226.87, true));
++    assertEquals(226.87, st.find(id).actual, .001);
++    assertFalse(st.recordFinalPayment(session, finishedAt, 226, false));
++    assertEquals(1, st.session().trips);
++    assertEquals(226.87, st.session().money, .001);
++  }
++
++  @Test
++  public void finalPaymentNeverOverwritesManualCorrectionOrManualTrip() {
++    String id = st.observedAssignment(null, null, false);
++    st.complete(id);
++    long finishedAt = System.currentTimeMillis();
++    st.correct(id, 230.50, 0, false, 0);
++    assertFalse(st.recordFinalPayment(st.session().id, finishedAt, 226.87, true));
++    assertEquals(230.50, st.find(id).actual, .001);
++    String manual = st.manual(200, 10, "yo");
++    assertFalse(st.recordFinalPayment(st.session().id, finishedAt, 200.66, true));
++    assertEquals(200, st.find(manual).actual, .001);
++  }
++
++  @Test
+   public void photographedOriginConfirmsAssignmentOnlyOnce() {
+     String id = attempt();
+     String screen = "CABIFY Ir a origen Avenida Ingeniero 1595 Navegar Ver ruta Cata";
+--- /dev/null
++++ b/app/src/test/java/com/cocotaxi/app/FinalPaymentTest.java
+@@ -0,0 +1,27 @@
++package com.cocotaxi.app;
++
++import static org.junit.Assert.*;
++import java.time.*;
++import java.util.List;
++import org.junit.Test;
++
++public class FinalPaymentTest {
++  @Test public void summaryIsProvisionalAndRequiresFinalScreen() {
++    assertEquals(226, FinalPayment.summary(OfferParser.normalize(
++        "Viaje finalizado $ 226 para ti PAGO EN LA APP Ver detalles Entendido")), .001);
++    assertTrue(Double.isNaN(FinalPayment.summary(OfferParser.normalize(
++        "Aceptar $ 226 para ti Ver detalles"))));
++  }
++
++  @Test public void historyReadsExactCentsAndLocalDay() {
++    long now = LocalDate.of(2026, 9, 26).atTime(0, 15).atZone(CocoStore.ZONE)
++        .toInstant().toEpochMilli();
++    List<FinalPayment.Entry> rows = FinalPayment.history(OfferParser.normalize(
++        "Historial de viajes Esta semana Ayer, 23:29 Cabify $ 226,87 "
++            + "Ayer, 23:08 Cabify Eléctrico $ 382,89"), now);
++    assertEquals(2, rows.size());
++    assertEquals(226.87, rows.get(0).amount, .001);
++    assertEquals(LocalDate.of(2026, 9, 25).atTime(23, 29).atZone(CocoStore.ZONE)
++        .toInstant().toEpochMilli(), rows.get(0).at);
++  }
++}

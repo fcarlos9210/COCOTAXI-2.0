@@ -677,6 +677,7 @@ public final class MainActivity extends Activity {
               if (st.session().paused) st.pause();
               else st.start();
               startOverlay();
+              CocotaxiAccessibilityService.inspectCurrent();
               render();
             }),
         new LinearLayout.LayoutParams(0, -2, 1.35f));

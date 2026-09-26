@@ -95,16 +95,8 @@ public final class CocotaxiAccessibilityService extends AccessibilityService {
         candidate = OfferParser.merge(candidate, recentOcrOffer);
 
       if (trip == null) {
-        // Give an already-running OCR frame a short chance to publish the fare before creating a
-        // zero-value assignment. This removes the common race where Cabify changes to Ir a origen
-        // a few milliseconds before Coco receives the final offer text.
-        if (candidate == null) {
-          if (assignmentWithoutOfferAt == 0L) assignmentWithoutOfferAt = now;
-          if (now - assignmentWithoutOfferAt < 1500L) {
-            diagnostic = "Viaje aceptado detectado · confirmando importe";
-            return;
-          }
-        }
+        // The assigned screen is sufficient to start service immediately. A missed offer can
+        // acquire its real amount from Cabify's final summary or exact history later.
         DecisionEngine.Result r = null;
         if (candidate != null) {
           annotateOffer(candidate);
@@ -158,6 +150,31 @@ public final class CocotaxiAccessibilityService extends AccessibilityService {
     boolean recovering = CocoStore.get(this).beginRecovery();
     handler.post(poll);
     diagnostic = recovering ? "INICIALIZANDO · recuperando viaje" : "Esperando señal de Cabify";
+  }
+
+  public static void inspectCurrent() {
+    CocotaxiAccessibilityService service = instance;
+    if (service != null && !service.destroyed) {
+      service.handler.post(() -> service.safeInspect(null));
+      service.handler.postDelayed(() -> service.safeInspect(null), 350L);
+    }
+  }
+
+  private void reconcilePayment(String normalized, CocoStore store, CocoStore.Session session) {
+    double summary = FinalPayment.summary(normalized);
+    if (Double.isFinite(summary) && session.active
+        && store.recordFinalPayment(session.id, System.currentTimeMillis(), summary, false)) {
+      diagnostic = "Pago final provisional: " + Money.exact(summary);
+      cachedSessionAt = cachedTripAt = 0L;
+    }
+    if (normalized.contains("historial de viajes")) {
+      for (FinalPayment.Entry entry : FinalPayment.history(normalized, System.currentTimeMillis())) {
+        if (store.recordFinalPayment(null, entry.at, entry.amount, true)) {
+          diagnostic = "Pago real del historial: " + Money.exact(entry.amount);
+          cachedSessionAt = cachedTripAt = 0L;
+        }
+      }
+    }
   }
 
   @Override
@@ -487,6 +504,11 @@ public final class CocotaxiAccessibilityService extends AccessibilityService {
       CocoStore store = CocoStore.get(this);
       CocoStore.Session session = sessionSnapshot(store, false);
       if (!session.active) {
+        try (TextCollector.Snapshot snapshot = TextCollector.snapshot(root)) {
+          String normalized = OfferParser.normalize(snapshot.text);
+          if (normalized.contains("historial de viajes"))
+            reconcilePayment(normalized, store, session);
+        }
         CocotaxiOverlayService.clearOffer();
         stableKey = "";
         stableAt = 0L;
@@ -512,10 +534,12 @@ public final class CocotaxiAccessibilityService extends AccessibilityService {
         }
 
         if (observeTripTerminal(normalized, assigned, store, session, trip)) {
+          reconcilePayment(normalized, store, session);
           CocotaxiOverlayService.clearOffer();
           cachedSessionAt = cachedTripAt = 0L;
           return;
         }
+        reconcilePayment(normalized, store, session);
         if (session.paused) {
           CocotaxiOverlayService.clearOffer();
           return;
@@ -540,7 +564,7 @@ public final class CocotaxiAccessibilityService extends AccessibilityService {
         if (!list && hasAccept) {
           Offer direct = OfferParser.parseNormalized(text, normalized, CABIFY);
           boolean fused = false;
-          if ((!direct.hasEnoughForDecision() || !direct.fareFractionVisible)
+          if (!direct.hasEnoughForDecision()
               && recentOcrOffer != null
               && SystemClock.elapsedRealtime() - recentOcrAt <= 5000
               && OfferParser.sameOffer(direct, recentOcrOffer)) {
@@ -559,8 +583,6 @@ public final class CocotaxiAccessibilityService extends AccessibilityService {
             previous = single;
             previousAt = SystemClock.elapsedRealtime();
             handleOffers(root, tree, single, fused, false, true, session, fused);
-            if (!direct.fareFractionVisible && Build.VERSION.SDK_INT >= 30)
-              requestScreenshot(root.getWindowId(), true);
             if ((direct.pickupArea.isEmpty() || direct.destinationArea.isEmpty())
                 && Build.VERSION.SDK_INT >= 30) requestScreenshot(root.getWindowId());
             diagnostic = fused ? "Oferta confirmada por Accessibility + OCR" : "Oferta detectada al instante";
@@ -592,8 +614,6 @@ public final class CocotaxiAccessibilityService extends AccessibilityService {
           previous = cards;
           previousAt = SystemClock.elapsedRealtime();
           handleOffers(root, tree, cards, false, list, hasAccept, session, false);
-          if (hasAccept && resultNeedsOcr(cards) && Build.VERSION.SDK_INT >= 30)
-            requestScreenshot(root.getWindowId(), true);
           diagnostic = "Leyendo " + cards.size() + " ofertas visibles";
         } else {
           stableKey = "";
@@ -663,6 +683,12 @@ public final class CocotaxiAccessibilityService extends AccessibilityService {
     DecisionEngine.Result result = best(cards, v, session, demand, promo);
     long decisionEndNs = SystemClock.elapsedRealtimeNanos();
     if (result == null) return;
+    // Critical ordering: decide -> click Cabify -> persist -> draw overlay. Window rendering must never
+    // delay the Accept action.
+    lastDispatchNs = 0L;
+    int click = maybeClick(root, tree, cards, v, result, list, hasAccept, requireStable,
+        fromOcr);
+    long completedNs = SystemClock.elapsedRealtimeNanos();
     for (Offer offer : cards) {
       if (offer != null && offer.hasEnoughForDecision()) {
         DecisionEngine.Result observation = offer == result.offer ? result
@@ -670,13 +696,6 @@ public final class CocotaxiAccessibilityService extends AccessibilityService {
         CocoDataStore.offer(this, session.id, offer, observation, fromOcr);
       }
     }
-
-    // Critical ordering: decide -> click Cabify -> persist -> draw overlay. Window rendering must never
-    // delay the Accept action.
-    lastDispatchNs = 0L;
-    int click = maybeClick(root, tree, cards, v, result, list, hasAccept, requireStable,
-        fromOcr);
-    long completedNs = SystemClock.elapsedRealtimeNanos();
     if (result.accept && v.autoAccept && click != CLICK_NONE) {
       long dispatchNs = lastDispatchNs > 0L ? lastDispatchNs : completedNs;
       android.util.Log.i(
@@ -702,12 +721,8 @@ public final class CocotaxiAccessibilityService extends AccessibilityService {
     }
     if (!v.autoAccept) { autoAcceptStatus = "Desactivado en Ajustes"; return CLICK_NONE; }
     if (r == null || !r.accept) { autoAcceptStatus = "Oferta fuera del filtro"; return CLICK_NONE; }
-    // Accessibility often omits the comma and cents. Show the estimate, but never automatically
-    // accept a rounded amount until a compatible OCR reading confirms the fare.
-    if (!fromOcr && r.offer != null && !r.offer.fareFractionVisible) {
-      autoAcceptStatus = "Esperando confirmar importe y centavos por OCR";
-      return CLICK_NONE;
-    }
+    // Cabify's offer price is often an integer. Decide on that displayed price; the exact
+    // final payment belongs to the completion/history flow and must not delay Accept.
     if (!canTargetAccept(cards, tree.acceptCount, list, r.offer)) {
       stableKey = "";
       autoAcceptStatus = "No se puede asociar la oferta a un botón único";
@@ -918,9 +933,11 @@ public final class CocotaxiAccessibilityService extends AccessibilityService {
                 boolean assigned = AssignmentSignals.isAssignedNormalized(normalized);
                 CocoStore.Trip trip = tripSnapshot(store, s);
                 if (observeTripTerminal(normalized, assigned, store, s, trip)) {
+                  reconcilePayment(normalized, store, s);
                   CocotaxiOverlayService.clearOffer();
                   return;
                 }
+                reconcilePayment(normalized, store, s);
                 observeAssignment(normalized, assigned, store, s, trip);
                 boolean ocrOfferVisible = OfferParser.isLikelyOfferNormalized(normalized);
                 if ((assigned && !ocrOfferVisible) || OfferParser.isHistoryNormalized(normalized)) {
