@@ -67,16 +67,20 @@
  
 --- a/app/src/main/java/com/cocotaxi/app/CocotaxiAccessibilityService.java
 +++ b/app/src/main/java/com/cocotaxi/app/CocotaxiAccessibilityService.java
-@@ -16,7 +16,9 @@
+@@ -16,11 +16,13 @@
    public static final String CABIFY = "com.cabify.driver";
    public static CocotaxiAccessibilityService instance;
    public static String diagnostic = "Activa Accesibilidad para leer Cabify";
 +  public static String autoAcceptStatus = "Sin oferta evaluada";
    private final Handler handler = new Handler(Looper.getMainLooper());
-+  private final Runnable stableRetry = () -> { if (!destroyed) safeInspect(null); };
    private ScreenOcrEngine ocr;
    private final MapDemandVision zoneVision = new MapDemandVision();
    private volatile boolean processing;
+   private volatile boolean busy, destroyed;
++  private final Runnable stableRetry = () -> { if (!destroyed) safeInspect(null); };
+   private long inspectStartedNs, lastDispatchNs;
+   private long ocrAt, stableAt, clickedAt;
+   private String stableKey = "";
 @@ -695,19 +697,28 @@
        boolean requireStable, boolean fromOcr) {
      if (!hasAccept || cards.isEmpty()) {

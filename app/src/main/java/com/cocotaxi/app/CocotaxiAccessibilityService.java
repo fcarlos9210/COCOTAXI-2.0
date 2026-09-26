@@ -18,11 +18,11 @@ public final class CocotaxiAccessibilityService extends AccessibilityService {
   public static String diagnostic = "Activa Accesibilidad para leer Cabify";
   public static String autoAcceptStatus = "Sin oferta evaluada";
   private final Handler handler = new Handler(Looper.getMainLooper());
-  private final Runnable stableRetry = () -> { if (!destroyed) safeInspect(null); };
   private ScreenOcrEngine ocr;
   private final MapDemandVision zoneVision = new MapDemandVision();
   private volatile boolean processing;
   private volatile boolean busy, destroyed;
+  private final Runnable stableRetry = () -> { if (!destroyed) safeInspect(null); };
   private long inspectStartedNs, lastDispatchNs;
   private long ocrAt, stableAt, clickedAt;
   private String stableKey = "";
