@@ -14,7 +14,7 @@ index c0a4578..b216a24 100644
  
      compileOptions {
 diff --git a/app/src/main/java/com/cocotaxi/app/CocoStore.java b/app/src/main/java/com/cocotaxi/app/CocoStore.java
-index a5e4cf5..01154de 100644
+index a5e4cf5..103c1f2 100644
 --- a/app/src/main/java/com/cocotaxi/app/CocoStore.java
 +++ b/app/src/main/java/com/cocotaxi/app/CocoStore.java
 @@ -643,6 +643,26 @@ public final class CocoStore extends SQLiteOpenHelper {
@@ -34,8 +34,8 @@ index a5e4cf5..01154de 100644
 +    try (Cursor q = getReadableDatabase().rawQuery(
 +        "SELECT COALESCE(SUM((COALESCE(actual,estimate)-COALESCE(cost,0))/100.0),0)"
 +            + " FROM trips WHERE deleted=0 AND trip=1 AND status='FINALIZADO'"
-+            + " AND (CASE WHEN completed_at>0 THEN completed_at ELSE at END)>=?"
-+            + " AND (CASE WHEN completed_at>0 THEN completed_at ELSE at END)<?",
++            + " AND (CASE WHEN origin='MANUAL' OR completed_at<=0 THEN at ELSE completed_at END)>=?"
++            + " AND (CASE WHEN origin='MANUAL' OR completed_at<=0 THEN at ELSE completed_at END)<?",
 +        new String[] {Long.toString(start), Long.toString(end)})) {
 +      return q.moveToFirst() ? q.getDouble(0) : 0;
 +    }
@@ -379,17 +379,18 @@ index b5270f8..b061f74 100644
                .saveBilling(
                    date.getText().toString(), all, tip, bon, toll, hist, eligible.isChecked());
 diff --git a/app/src/test/java/com/cocotaxi/app/StoreTest.java b/app/src/test/java/com/cocotaxi/app/StoreTest.java
-index ee7b4d1..c5ae490 100644
+index ee7b4d1..dc9e5e4 100644
 --- a/app/src/test/java/com/cocotaxi/app/StoreTest.java
 +++ b/app/src/test/java/com/cocotaxi/app/StoreTest.java
-@@ -78,6 +78,21 @@ public class StoreTest {
+@@ -78,6 +78,22 @@ public class StoreTest {
      assertEquals(200, st.session().money, .001);
    }
  
 +  @Test
 +  public void dailyHistoryUsesCompletedTripsAndPreservesCents() {
-+    String day = java.time.LocalDate.now(CocoStore.ZONE).toString();
 +    String first = st.manual(398.97, 10, "primero");
++    String day = java.time.Instant.ofEpochMilli(st.find(first).at)
++        .atZone(CocoStore.ZONE).toLocalDate().toString();
 +    st.manual(226.87, 8, "segundo");
 +    st.manual(50, 0, "bono", false);
 +    assertEquals(625.84, st.dailyTripTotal(day), .001);
@@ -397,7 +398,7 @@ index ee7b4d1..c5ae490 100644
 +    assertEquals(226.87, st.dailyTripTotal(day), .001);
 +    st.restore(first);
 +    assertEquals(625.84, st.dailyTripTotal(day), .001);
-+    assertEquals(0, st.dailyTripTotal(java.time.LocalDate.now(CocoStore.ZONE)
++    assertEquals(0, st.dailyTripTotal(java.time.LocalDate.parse(day)
 +        .minusDays(5).toString()), .001);
 +  }
 +
