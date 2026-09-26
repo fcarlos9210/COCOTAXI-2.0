@@ -193,7 +193,7 @@ jobs:
       - name: Apply COCOTAXI 3.1.7 Core and Data
         shell: bash
         run: |
-          patch --batch -p1 -d "$PROJECT_DIR" < cocotaxi-3.1.8-core-data.patch
+          patch --batch -p1 -d "$PROJECT_DIR" < cocotaxi-3.1.7-core-data.patch
 
       - name: Apply COCOTAXI 3.1.8 A52 fixes
         shell: bash
