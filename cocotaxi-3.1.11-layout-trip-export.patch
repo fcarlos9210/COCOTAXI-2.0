@@ -1,0 +1,183 @@
+diff --git a/app/build.gradle b/app/build.gradle
+index b216a24..1b42817 100644
+--- a/app/build.gradle
++++ b/app/build.gradle
+@@ -10,8 +10,8 @@ android {
+         applicationId 'com.cocotaxi.app'
+         minSdk 26
+         targetSdk 36
+-        versionCode 60
+-        versionName '3.1.10'
++        versionCode 61
++        versionName '3.1.11'
+     }
+ 
+     compileOptions {
+diff --git a/app/src/main/java/com/cocotaxi/app/CocoStore.java b/app/src/main/java/com/cocotaxi/app/CocoStore.java
+index a7afb30..752d43e 100644
+--- a/app/src/main/java/com/cocotaxi/app/CocoStore.java
++++ b/app/src/main/java/com/cocotaxi/app/CocoStore.java
+@@ -5,9 +5,13 @@ import android.database.Cursor;
+ import android.database.sqlite.*;
+ import android.os.SystemClock;
+ import android.provider.Settings;
++import java.io.IOException;
++import java.io.OutputStream;
++import java.nio.charset.StandardCharsets;
+ import java.time.*;
+ import java.util.*;
+ import java.util.concurrent.atomic.AtomicLong;
++import org.json.JSONObject;
+ 
+ /** Persistent sessions and trip ledger. Attempts, assignment and payment are separate facts. */
+ public final class CocoStore extends SQLiteOpenHelper {
+@@ -663,6 +667,45 @@ public final class CocoStore extends SQLiteOpenHelper {
+     }
+   }
+ 
++  /** Append completed rides to the user-created monthly JSONL export. */
++  public int exportCompletedTrips(OutputStream out, YearMonth month) throws IOException {
++    long start = month.atDay(1).atStartOfDay(ZONE).toInstant().toEpochMilli();
++    long end = month.plusMonths(1).atDay(1).atStartOfDay(ZONE).toInstant().toEpochMilli();
++    String tripDate = "CASE WHEN origin='MANUAL' OR completed_at<=0 THEN at ELSE completed_at END";
++    int count = 0;
++    try (Cursor q = getReadableDatabase().rawQuery(
++        "SELECT id,session,at,completed_at,actual,estimate,cost,minutes,origin,offered,"
++            + tripDate + " FROM trips WHERE deleted=0 AND trip=1 AND status='FINALIZADO'"
++            + " AND " + tripDate + ">=CAST(? AS INTEGER)"
++            + " AND " + tripDate + "<CAST(? AS INTEGER) ORDER BY " + tripDate + ",id",
++        new String[] {Long.toString(start), Long.toString(end)})) {
++      while (q.moveToNext()) {
++        try {
++          JSONObject row = new JSONObject();
++          row.put("type", "trip_completed");
++          row.put("id", q.getString(0));
++          row.put("session", q.getString(1));
++          row.put("at", q.getLong(10));
++          row.put("offer_at", q.getLong(2));
++          row.put("recorded_at", q.getLong(3));
++          row.put("importe_cents", (q.isNull(4) ? q.getLong(5) : q.getLong(4)) - q.getLong(6));
++          row.put("payment_confirmed", !q.isNull(4));
++          row.put("actual_cents", q.isNull(4) ? JSONObject.NULL : q.getLong(4));
++          row.put("estimated_cents", q.getLong(5));
++          row.put("cost_cents", q.getLong(6));
++          row.put("duration_seconds", Math.round(q.getDouble(7) * 60));
++          row.put("origin", q.getString(8));
++          row.put("offered_cents", Money.cents(q.getDouble(9)));
++          out.write((row.toString() + "\n").getBytes(StandardCharsets.UTF_8));
++          count++;
++        } catch (org.json.JSONException e) {
++          throw new IOException("No se pudo preparar el viaje exportado", e);
++        }
++      }
++    }
++    return count;
++  }
++
+   /** Freeze an active ride at the last persisted checkpoint until Cabify is inspected. */
+   public synchronized boolean beginRecovery() {
+     SQLiteDatabase db = getWritableDatabase();
+diff --git a/app/src/main/java/com/cocotaxi/app/MainActivity.java b/app/src/main/java/com/cocotaxi/app/MainActivity.java
+index b061f74..6a26b3a 100644
+--- a/app/src/main/java/com/cocotaxi/app/MainActivity.java
++++ b/app/src/main/java/com/cocotaxi/app/MainActivity.java
+@@ -329,6 +329,9 @@ public final class MainActivity extends Activity {
+       i.setIconColor(GREEN);
+       h.addView(i, new LinearLayout.LayoutParams(dp(compactUi ? 21 : 25), dp(compactUi ? 21 : 25)));
+       TextView t = bold("  " + title, compactUi ? 14 : 16, WHITE);
++      t.setSingleLine(true);
++      t.setAutoSizeTextTypeUniformWithConfiguration(12, compactUi ? 14 : 16, 1,
++          android.util.TypedValue.COMPLEX_UNIT_SP);
+       h.addView(t, new LinearLayout.LayoutParams(0, -2, 1));
+       c.addView(h);
+       gap(c, compactUi ? 3 : 5);
+@@ -667,7 +670,7 @@ public final class MainActivity extends Activity {
+ 
+   private boolean useCompactUi() {
+     android.content.res.Configuration config = getResources().getConfiguration();
+-    return config.screenHeightDp < 900 || config.screenWidthDp < 390 || config.fontScale > 1.05f;
++    return config.screenHeightDp < 690 || config.screenWidthDp < 350 || config.fontScale > 1.3f;
+   }
+ 
+   private void home() {
+@@ -944,12 +947,11 @@ public final class MainActivity extends Activity {
+                 : "sin señal reciente del mapa"), compactUi ? 10 : 12, MUTED));
+       }
+     }
+-    intro.addView(button("Exportar observaciones del mes", () -> {
++    intro.addView(button("Exportar datos del mes", () -> {
+       java.io.File file = CocoDataStore.currentFile(this, System.currentTimeMillis());
+-      if (!file.isFile()) { toast("Aún no hay observaciones este mes"); return; }
+       Intent save = new Intent(Intent.ACTION_CREATE_DOCUMENT)
+           .addCategory(Intent.CATEGORY_OPENABLE).setType("application/x-ndjson")
+-          .putExtra(Intent.EXTRA_TITLE, file.getName());
++          .putExtra(Intent.EXTRA_TITLE, file.getName().replace("observacion_", "coco_"));
+       startActivityForResult(save, 94);
+     }));
+   }
+@@ -1966,12 +1968,17 @@ public final class MainActivity extends Activity {
+     if (result != RESULT_OK || data == null) return;
+     if (request == 94 && data.getData() != null) {
+       java.io.File file = CocoDataStore.currentFile(this, System.currentTimeMillis());
+-      try (java.io.InputStream in = new java.io.FileInputStream(file);
+-           java.io.OutputStream out = getContentResolver().openOutputStream(data.getData())) {
++      try (java.io.OutputStream out = getContentResolver().openOutputStream(data.getData())) {
+         if (out == null) throw new java.io.IOException("Destino no disponible");
+-        byte[] buffer = new byte[8192];
+-        for (int n; (n = in.read(buffer)) != -1;) out.write(buffer, 0, n);
+-        toast("Observaciones exportadas");
++        if (file.isFile()) {
++          try (java.io.InputStream in = new java.io.FileInputStream(file)) {
++            byte[] buffer = new byte[8192];
++            for (int n; (n = in.read(buffer)) != -1;) out.write(buffer, 0, n);
++          }
++        }
++        int trips = CocoStore.get(this).exportCompletedTrips(out,
++            java.time.YearMonth.now(CocoStore.ZONE));
++        toast("Datos exportados · " + trips + " viajes terminados");
+       } catch (Exception e) { toast("No se pudieron exportar los datos"); }
+       return;
+     }
+diff --git a/app/src/test/java/com/cocotaxi/app/StoreTest.java b/app/src/test/java/com/cocotaxi/app/StoreTest.java
+index dc9e5e4..2fd7f43 100644
+--- a/app/src/test/java/com/cocotaxi/app/StoreTest.java
++++ b/app/src/test/java/com/cocotaxi/app/StoreTest.java
+@@ -94,6 +94,25 @@ public class StoreTest {
+         .minusDays(5).toString()), .001);
+   }
+ 
++  @Test
++  public void monthlyExportIncludesCompletedTripsWithExactAmountAndDuration() throws Exception {
++    String kept = st.manual(398.97, 10, "viaje");
++    String removed = st.manual(150, 5, "borrado");
++    st.delete(removed);
++    st.manual(25, 0, "extra", false);
++    java.time.YearMonth month = java.time.YearMonth.from(java.time.Instant
++        .ofEpochMilli(st.find(kept).at).atZone(CocoStore.ZONE));
++    java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
++    assertEquals(1, st.exportCompletedTrips(out, month));
++    org.json.JSONObject trip = new org.json.JSONObject(out.toString("UTF-8").trim());
++    assertEquals("trip_completed", trip.getString("type"));
++    assertEquals(39897, trip.getLong("importe_cents"));
++    assertEquals(600, trip.getLong("duration_seconds"));
++    assertTrue(trip.getBoolean("payment_confirmed"));
++    out.reset();
++    assertEquals(0, st.exportCompletedTrips(out, month.minusMonths(1)));
++  }
++
+   @Test
+   public void separateSessions() {
+     st.manual(200, 10, "a");
+diff --git a/app/src/test/java/com/cocotaxi/app/UiTest.java b/app/src/test/java/com/cocotaxi/app/UiTest.java
+index fda09a2..933f1dc 100644
+--- a/app/src/test/java/com/cocotaxi/app/UiTest.java
++++ b/app/src/test/java/com/cocotaxi/app/UiTest.java
+@@ -159,7 +159,7 @@ public class UiTest {
+       assertNull(find(a.getWindow().getDecorView(), "Creado por Frank Carlos"));
+       snapshot(a, "ajustes");
+       click(a, "DÓNDE IR");
+-      assertNotNull(find(a.getWindow().getDecorView(), "Exportar observaciones del mes"));
++      assertNotNull(find(a.getWindow().getDecorView(), "Exportar datos del mes"));
+     }
+   }
+ 
