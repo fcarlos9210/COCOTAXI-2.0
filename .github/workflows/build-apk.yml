@@ -1,4 +1,4 @@
-name: Build COCOTAXI 3.1.10 session billing and layout
+name: Build COCOTAXI 3.1.11 expanded layout and trip export
 
 on:
   workflow_dispatch:
@@ -35,6 +35,7 @@ on:
       - 'cocotaxi-3.1.8-a52-overlay-autoaccept.patch'
       - 'cocotaxi-3.1.9-fast-accept-final-payment.patch'
       - 'cocotaxi-3.1.10-session-billing-layout.patch'
+      - 'cocotaxi-3.1.11-layout-trip-export.patch'
       - '.github/workflows/build-apk.yml'
 
 jobs:
@@ -207,10 +208,15 @@ jobs:
         run: |
           patch --batch -p1 -d "$PROJECT_DIR" < cocotaxi-3.1.9-fast-accept-final-payment.patch
 
-      - name: Apply COCOTAXI 3.1.10 session billing and layout
+      - name: Apply COCOTAXI 3.1.11 expanded layout and trip export
         shell: bash
         run: |
           patch --batch -p1 -d "$PROJECT_DIR" < cocotaxi-3.1.10-session-billing-layout.patch
+
+      - name: Apply COCOTAXI 3.1.11 layout and trip export
+        shell: bash
+        run: |
+          patch --batch -p1 -d "$PROJECT_DIR" < cocotaxi-3.1.11-layout-trip-export.patch
 
       - name: Set up Java 17
         uses: actions/setup-java@v5
@@ -221,8 +227,8 @@ jobs:
       - name: Verify final version and public license surface
         shell: bash
         run: |
-          grep -R "versionName '3.1.10'" "$PROJECT_DIR/app/build.gradle"
-          grep -R "versionCode 60" "$PROJECT_DIR/app/build.gradle"
+          grep -R "versionName '3.1.11'" "$PROJECT_DIR/app/build.gradle"
+          grep -R "versionCode 61" "$PROJECT_DIR/app/build.gradle"
           grep -R "cocotaxi-license-api.cocotaxi-licenses-alecandido998.workers.dev" "$PROJECT_DIR/app/src/main/java/com/cocotaxi/app/LicenseApiClient.java"
           ! grep -RE "/admin|ADMIN_PANEL_PASSWORD|X-Admin|adminToken" "$PROJECT_DIR/app/src/main/java/com/cocotaxi/app/LicenseApiClient.java"
           ! grep -RE "ACCESS_FINE_LOCATION|ACCESS_COARSE_LOCATION|ACCESS_BACKGROUND_LOCATION" "$PROJECT_DIR/app/src/main/AndroidManifest.xml"
@@ -271,18 +277,18 @@ jobs:
         shell: bash
         run: |
           cd "$(dirname "$PROJECT_DIR")"
-          zip -qr COCOTAXI_3.1.10_fuentes.zip "$(basename "$PROJECT_DIR")"
+          zip -qr COCOTAXI_3.1.11_fuentes.zip "$(basename "$PROJECT_DIR")"
 
-      - name: Upload COCOTAXI 3.1.10 APK
+      - name: Upload COCOTAXI 3.1.11 APK
         uses: actions/upload-artifact@v4
         with:
-          name: COCOTAXI-3.1.10-session-debug-apk
+          name: COCOTAXI-3.1.11-expanded-debug-apk
           path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
 
-      - name: Upload COCOTAXI 3.1.10 source
+      - name: Upload COCOTAXI 3.1.11 source
         uses: actions/upload-artifact@v4
         with:
-          name: COCOTAXI-3.1.10-session-source
-          path: build-2.6.6/COCOTAXI_3.1.10_fuentes.zip
+          name: COCOTAXI-3.1.11-expanded-source
+          path: build-2.6.6/COCOTAXI_3.1.11_fuentes.zip
           if-no-files-found: error
