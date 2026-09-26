@@ -1,0 +1,33 @@
+name: Build COCOTAXI 3.1.13
+on:
+  push:
+    branches: [build/cocotaxi-3.1.13-core-ui]
+  workflow_dispatch:
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Android SDK
+        uses: android-actions/setup-android@v3
+      - name: Android 36
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+      - name: Unpack source
+        run: |
+          cat coco313/part.* | base64 -d > COCOTAXI_3.1.13_fuentes.zip
+          unzip -q COCOTAXI_3.1.13_fuentes.zip -d work
+          chmod +x work/source/gradlew
+      - name: Compile and test
+        working-directory: work/source
+        run: ./gradlew --no-daemon testDebugUnitTest assembleDebug
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: COCOTAXI-3.1.13-debug-apk
+          path: work/source/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
