@@ -13,10 +13,13 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - name: Android SDK
-        uses: android-actions/setup-android@v3
-      - name: Android 36
-        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+      - name: Android platform
+        run: |
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          ls "$ANDROID_HOME/platforms" || true
+          if [ ! -d "$ANDROID_HOME/platforms/android-36" ]; then
+            yes | sdkmanager "platforms;android-36" "build-tools;36.0.0" || true
+          fi
       - name: Unpack source
         run: |
           cat coco313/part.* | base64 -d > COCOTAXI_3.1.13_fuentes.zip
