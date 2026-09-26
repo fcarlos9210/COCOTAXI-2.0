@@ -405,7 +405,7 @@ index ee7b4d1..c5ae490 100644
    public void separateSessions() {
      st.manual(200, 10, "a");
 diff --git a/app/src/test/java/com/cocotaxi/app/UiTest.java b/app/src/test/java/com/cocotaxi/app/UiTest.java
-index 22dfeb5..55564c1 100644
+index 22dfeb5..fda09a2 100644
 --- a/app/src/test/java/com/cocotaxi/app/UiTest.java
 +++ b/app/src/test/java/com/cocotaxi/app/UiTest.java
 @@ -146,7 +146,7 @@ public class UiTest {
@@ -417,3 +417,21 @@ index 22dfeb5..55564c1 100644
        snapshot(a, "sesion");
        click(a, "Ajustes");
        assertNotNull(find(a.getWindow().getDecorView(), "Guardar ajustes"));
+@@ -164,7 +164,7 @@ public class UiTest {
+   }
+ 
+   @Test
+-  public void manualTripShowsImporteAndTiempoInSession() {
++  public void manualTripShowsImporteAndDurationInSession() {
+     CocoStore store = CocoStore.get(RuntimeEnvironment.getApplication());
+     store.start();
+     store.manual(398.97, 10, "Viaje manual");
+@@ -172,7 +172,7 @@ public class UiTest {
+         Robolectric.buildActivity(MainActivity.class).setup()) {
+       MainActivity a = ac.get();
+       click(a, "Sesión");
+-      assertNotNull(find(a.getWindow().getDecorView(), "Importe $398,97 · Tiempo 10:00"));
++      assertNotNull(find(a.getWindow().getDecorView(), "Importe $398,97 · Duración 10:00"));
+     }
+   }
+ 
